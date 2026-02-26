@@ -137,14 +137,14 @@ def _trim_conversation(sender: str):
 
 async def handle_message(user_message: str, sender: str = "default") -> str:
     """Process a WhatsApp message through Claude and return the response."""
-    client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+    client = anthropic.AsyncAnthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
 
     messages = _get_conversation(sender)
     messages.append({"role": "user", "content": user_message})
 
     # Agentic loop: keep going until Claude produces a final text response
     while True:
-        response = client.messages.create(
+        response = await client.messages.create(
             model=MODEL,
             max_tokens=1024,
             system=SYSTEM_PROMPT,

@@ -53,11 +53,11 @@ async def debug():
     import anthropic
     import httpx
 
-    # Test Anthropic API connectivity
+    # Test Anthropic API connectivity (async client)
     api_test = "not tested"
     try:
-        client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
-        resp = client.messages.create(
+        client = anthropic.AsyncAnthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+        resp = await client.messages.create(
             model="claude-sonnet-4-6",
             max_tokens=10,
             messages=[{"role": "user", "content": "Hi"}],
