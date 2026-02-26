@@ -42,10 +42,22 @@ def _validate_twilio_signature(url: str, params: dict, signature: str) -> bool:
     return validator.validate(url, params, signature)
 
 
+# Debug: track last webhook hit
+_last_webhook = {"hit": False, "from": "", "body": "", "error": "", "all_params": {}}
+
+
 @app.get("/")
 async def health():
     return {"status": "ok", "service": "Flame & Finish Inventory Bot"}
 
+
+@app.get("/debug")
+async def debug():
+    return {
+        "last_webhook": _last_webhook,
+        "whatsapp_number": TWILIO_WHATSAPP_NUMBER,
+        "allowed_numbers": list(ALLOWED_NUMBERS),
+    }
 
 
 @app.post("/webhook")
@@ -56,6 +68,12 @@ async def whatsapp_webhook(request: Request):
 
     From = params.get("From", "")
     Body = params.get("Body", "")
+
+    # Debug tracking
+    _last_webhook["hit"] = True
+    _last_webhook["from"] = From
+    _last_webhook["body"] = Body
+    _last_webhook["all_params"] = {k: str(v)[:100] for k, v in params.items()}
 
     # Validate Twilio signature (skip in dev — ngrok changes the URL which breaks validation)
     if os.getenv("VALIDATE_TWILIO_SIGNATURE", "false").lower() == "true":
