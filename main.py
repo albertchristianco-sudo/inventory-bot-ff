@@ -5,10 +5,9 @@ from dotenv import load_dotenv
 load_dotenv(override=True)
 
 from fastapi import FastAPI, Form, Request
-from fastapi.responses import PlainTextResponse, Response
+from fastapi.responses import PlainTextResponse
 from twilio.rest import Client as TwilioClient
 from twilio.request_validator import RequestValidator
-from twilio.twiml.messaging_response import MessagingResponse
 
 import agent
 
@@ -42,22 +41,9 @@ def _validate_twilio_signature(url: str, params: dict, signature: str) -> bool:
     return validator.validate(url, params, signature)
 
 
-# Debug: track last webhook hit
-_last_webhook = {"hit": False, "from": "", "body": "", "error": "", "all_params": {}}
-
-
 @app.get("/")
 async def health():
     return {"status": "ok", "service": "Flame & Finish Inventory Bot"}
-
-
-@app.get("/debug")
-async def debug():
-    return {
-        "last_webhook": _last_webhook,
-        "whatsapp_number": TWILIO_WHATSAPP_NUMBER,
-        "allowed_numbers": list(ALLOWED_NUMBERS),
-    }
 
 
 @app.post("/webhook")
@@ -68,12 +54,6 @@ async def whatsapp_webhook(request: Request):
 
     From = params.get("From", "")
     Body = params.get("Body", "")
-
-    # Debug tracking
-    _last_webhook["hit"] = True
-    _last_webhook["from"] = From
-    _last_webhook["body"] = Body
-    _last_webhook["all_params"] = {k: str(v)[:100] for k, v in params.items()}
 
     # Validate Twilio signature (skip in dev — ngrok changes the URL which breaks validation)
     if os.getenv("VALIDATE_TWILIO_SIGNATURE", "false").lower() == "true":
@@ -102,10 +82,9 @@ async def whatsapp_webhook(request: Request):
             from_=TWILIO_WHATSAPP_NUMBER,
             to=From,
         )
-        _last_webhook["error"] = f"sent OK - sid: {msg.sid}, status: {msg.status}"
+        logger.info(f"Reply sent - sid: {msg.sid}, status: {msg.status}")
     except Exception as e:
         logger.error(f"Twilio send error: {e}")
-        _last_webhook["error"] = f"Twilio send: {e}"
 
     return PlainTextResponse("OK")
 
