@@ -47,6 +47,20 @@ async def health():
     return {"status": "ok", "service": "Flame & Finish Inventory Bot"}
 
 
+@app.get("/debug")
+async def debug():
+    """Temporary debug endpoint — remove before production."""
+    return {
+        "anthropic_key_set": bool(os.getenv("ANTHROPIC_API_KEY")),
+        "anthropic_key_prefix": (os.getenv("ANTHROPIC_API_KEY") or "")[:15] + "...",
+        "notion_key_set": bool(os.getenv("NOTION_API_KEY")),
+        "notion_db_set": bool(os.getenv("NOTION_DATABASE_ID")),
+        "notion_sales_db_set": bool(os.getenv("NOTION_SALES_DB_ID")),
+        "twilio_sid_set": bool(os.getenv("TWILIO_ACCOUNT_SID")),
+        "allowed_numbers": list(ALLOWED_NUMBERS),
+    }
+
+
 @app.post("/webhook")
 async def whatsapp_webhook(request: Request):
     """Receive incoming WhatsApp messages from Twilio."""
