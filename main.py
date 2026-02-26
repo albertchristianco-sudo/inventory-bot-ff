@@ -56,7 +56,7 @@ async def debug():
     # Test Anthropic SDK (async)
     sdk_test = "not tested"
     try:
-        client = anthropic.AsyncAnthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+        client = anthropic.AsyncAnthropic(api_key=os.getenv("ANTHROPIC_API_KEY", "").strip())
         resp = await client.messages.create(
             model="claude-sonnet-4-6",
             max_tokens=10,
@@ -70,7 +70,7 @@ async def debug():
     # Test raw httpx POST to Anthropic API
     raw_post = "not tested"
     try:
-        api_key = os.getenv("ANTHROPIC_API_KEY")
+        api_key = os.getenv("ANTHROPIC_API_KEY", "").strip()
         async with httpx.AsyncClient() as hc:
             r = await hc.post(
                 "https://api.anthropic.com/v1/messages",

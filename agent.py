@@ -137,7 +137,7 @@ def _trim_conversation(sender: str):
 
 async def handle_message(user_message: str, sender: str = "default") -> str:
     """Process a WhatsApp message through Claude and return the response."""
-    client = anthropic.AsyncAnthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+    client = anthropic.AsyncAnthropic(api_key=os.getenv("ANTHROPIC_API_KEY", "").strip())
 
     messages = _get_conversation(sender)
     messages.append({"role": "user", "content": user_message})
