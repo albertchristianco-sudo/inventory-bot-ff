@@ -87,8 +87,8 @@ async def whatsapp_webhook(request: Request):
     try:
         reply = await agent.handle_message(Body, sender=From)
     except Exception as e:
-        logger.error(f"Agent error: {e}")
-        reply = "Sorry, something went wrong processing your message. Try again in a bit!"
+        logger.error(f"Agent error: {e}", exc_info=True)
+        reply = f"Error: {type(e).__name__}: {e}"
 
     # Return TwiML response — Twilio reads this and sends the reply as a WhatsApp message
     twiml = MessagingResponse()
