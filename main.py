@@ -47,56 +47,6 @@ async def health():
     return {"status": "ok", "service": "Flame & Finish Inventory Bot"}
 
 
-@app.get("/debug")
-async def debug():
-    """Temporary debug endpoint — remove before production."""
-    import anthropic
-    import httpx
-
-    # Test Anthropic SDK (async)
-    sdk_test = "not tested"
-    try:
-        client = anthropic.AsyncAnthropic(api_key=os.getenv("ANTHROPIC_API_KEY", "").strip())
-        resp = await client.messages.create(
-            model="claude-sonnet-4-6",
-            max_tokens=10,
-            messages=[{"role": "user", "content": "Hi"}],
-        )
-        sdk_test = f"OK - {resp.content[0].text[:50]}"
-    except Exception as e:
-        cause = e.__cause__
-        sdk_test = f"FAIL - {type(e).__name__}: {e} | cause: {type(cause).__name__ if cause else 'none'}: {cause}"
-
-    # Test raw httpx POST to Anthropic API
-    raw_post = "not tested"
-    try:
-        api_key = os.getenv("ANTHROPIC_API_KEY", "").strip()
-        async with httpx.AsyncClient() as hc:
-            r = await hc.post(
-                "https://api.anthropic.com/v1/messages",
-                headers={
-                    "x-api-key": api_key,
-                    "anthropic-version": "2023-06-01",
-                    "content-type": "application/json",
-                },
-                json={
-                    "model": "claude-sonnet-4-6",
-                    "max_tokens": 10,
-                    "messages": [{"role": "user", "content": "Hi"}],
-                },
-                timeout=30,
-            )
-        raw_post = f"status {r.status_code} - {r.text[:100]}"
-    except Exception as e:
-        raw_post = f"FAIL - {type(e).__name__}: {e}"
-
-    return {
-        "sdk_test": sdk_test,
-        "raw_post_test": raw_post,
-        "anthropic_sdk_version": anthropic.__version__,
-        "anthropic_key_prefix": (os.getenv("ANTHROPIC_API_KEY") or "")[:20] + "...",
-    }
-
 
 @app.post("/webhook")
 async def whatsapp_webhook(request: Request):
@@ -125,7 +75,7 @@ async def whatsapp_webhook(request: Request):
         reply = await agent.handle_message(Body, sender=From)
     except Exception as e:
         logger.error(f"Agent error: {e}", exc_info=True)
-        reply = f"Error: {type(e).__name__}: {e}"
+        reply = "Sorry, something went wrong processing your message. Try again in a bit!"
 
     # Return TwiML response — Twilio reads this and sends the reply as a WhatsApp message
     twiml = MessagingResponse()
