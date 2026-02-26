@@ -53,8 +53,8 @@ async def debug():
     import anthropic
     import httpx
 
-    # Test Anthropic API connectivity (async client)
-    api_test = "not tested"
+    # Test Anthropic SDK (async)
+    sdk_test = "not tested"
     try:
         client = anthropic.AsyncAnthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
         resp = await client.messages.create(
@@ -62,26 +62,39 @@ async def debug():
             max_tokens=10,
             messages=[{"role": "user", "content": "Hi"}],
         )
-        api_test = f"OK - {resp.content[0].text[:50]}"
+        sdk_test = f"OK - {resp.content[0].text[:50]}"
     except Exception as e:
-        api_test = f"FAIL - {type(e).__name__}: {e}"
+        cause = e.__cause__
+        sdk_test = f"FAIL - {type(e).__name__}: {e} | cause: {type(cause).__name__ if cause else 'none'}: {cause}"
 
-    # Test raw HTTPS connectivity
-    net_test = "not tested"
+    # Test raw httpx POST to Anthropic API
+    raw_post = "not tested"
     try:
-        r = httpx.get("https://api.anthropic.com", timeout=10)
-        net_test = f"OK - status {r.status_code}"
+        api_key = os.getenv("ANTHROPIC_API_KEY")
+        async with httpx.AsyncClient() as hc:
+            r = await hc.post(
+                "https://api.anthropic.com/v1/messages",
+                headers={
+                    "x-api-key": api_key,
+                    "anthropic-version": "2023-06-01",
+                    "content-type": "application/json",
+                },
+                json={
+                    "model": "claude-sonnet-4-6",
+                    "max_tokens": 10,
+                    "messages": [{"role": "user", "content": "Hi"}],
+                },
+                timeout=30,
+            )
+        raw_post = f"status {r.status_code} - {r.text[:100]}"
     except Exception as e:
-        net_test = f"FAIL - {type(e).__name__}: {e}"
+        raw_post = f"FAIL - {type(e).__name__}: {e}"
 
     return {
-        "anthropic_key_set": bool(os.getenv("ANTHROPIC_API_KEY")),
-        "anthropic_key_prefix": (os.getenv("ANTHROPIC_API_KEY") or "")[:15] + "...",
-        "anthropic_api_test": api_test,
-        "network_test": net_test,
-        "notion_key_set": bool(os.getenv("NOTION_API_KEY")),
-        "notion_db_set": bool(os.getenv("NOTION_DATABASE_ID")),
+        "sdk_test": sdk_test,
+        "raw_post_test": raw_post,
         "anthropic_sdk_version": anthropic.__version__,
+        "anthropic_key_prefix": (os.getenv("ANTHROPIC_API_KEY") or "")[:20] + "...",
     }
 
 
