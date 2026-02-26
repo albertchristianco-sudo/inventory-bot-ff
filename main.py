@@ -95,10 +95,25 @@ async def whatsapp_webhook(request: Request):
         logger.error(f"Agent error: {e}", exc_info=True)
         reply = "Sorry, something went wrong processing your message. Try again in a bit!"
 
-    # Return TwiML response — Twilio reads this and sends the reply as a WhatsApp message
-    twiml = MessagingResponse()
-    twiml.message(reply)
-    return Response(content=str(twiml), media_type="text/xml")
+    # Send reply via Twilio REST API (required for production WhatsApp numbers with Messaging Services)
+    # Also try TwiML as fallback for sandbox compatibility
+    messaging_service_sid = params.get("MessagingServiceSid", "")
+
+    try:
+        send_kwargs = {"body": reply, "to": From}
+        if messaging_service_sid:
+            # Production: reply through the same Messaging Service
+            send_kwargs["messaging_service_sid"] = messaging_service_sid
+        else:
+            # Sandbox fallback: reply from the WhatsApp number directly
+            send_kwargs["from_"] = TWILIO_WHATSAPP_NUMBER
+        _get_twilio_client().messages.create(**send_kwargs)
+        _last_webhook["error"] = ""
+    except Exception as e:
+        logger.error(f"Twilio send error: {e}")
+        _last_webhook["error"] = f"Twilio send: {e}"
+
+    return PlainTextResponse("OK")
 
 
 if __name__ == "__main__":
