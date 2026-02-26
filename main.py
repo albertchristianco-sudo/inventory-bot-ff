@@ -50,14 +50,38 @@ async def health():
 @app.get("/debug")
 async def debug():
     """Temporary debug endpoint — remove before production."""
+    import anthropic
+    import httpx
+
+    # Test Anthropic API connectivity
+    api_test = "not tested"
+    try:
+        client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+        resp = client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=10,
+            messages=[{"role": "user", "content": "Hi"}],
+        )
+        api_test = f"OK - {resp.content[0].text[:50]}"
+    except Exception as e:
+        api_test = f"FAIL - {type(e).__name__}: {e}"
+
+    # Test raw HTTPS connectivity
+    net_test = "not tested"
+    try:
+        r = httpx.get("https://api.anthropic.com", timeout=10)
+        net_test = f"OK - status {r.status_code}"
+    except Exception as e:
+        net_test = f"FAIL - {type(e).__name__}: {e}"
+
     return {
         "anthropic_key_set": bool(os.getenv("ANTHROPIC_API_KEY")),
         "anthropic_key_prefix": (os.getenv("ANTHROPIC_API_KEY") or "")[:15] + "...",
+        "anthropic_api_test": api_test,
+        "network_test": net_test,
         "notion_key_set": bool(os.getenv("NOTION_API_KEY")),
         "notion_db_set": bool(os.getenv("NOTION_DATABASE_ID")),
-        "notion_sales_db_set": bool(os.getenv("NOTION_SALES_DB_ID")),
-        "twilio_sid_set": bool(os.getenv("TWILIO_ACCOUNT_SID")),
-        "allowed_numbers": list(ALLOWED_NUMBERS),
+        "anthropic_sdk_version": anthropic.__version__,
     }
 
 
