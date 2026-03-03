@@ -1,4 +1,5 @@
 import os
+import asyncio
 import logging
 from dotenv import load_dotenv
 
@@ -68,25 +69,30 @@ async def whatsapp_webhook(request: Request):
         logger.warning(f"Unauthorized number: {From}")
         return PlainTextResponse("Unauthorized", status_code=403)
 
-    # Process through Claude agent and reply
+    # Process in background so Twilio doesn't time out (15s limit)
+    # Return immediately, then send reply via REST API when ready
+    asyncio.create_task(_process_and_reply(Body, From))
+
+    return PlainTextResponse("OK")
+
+
+async def _process_and_reply(body: str, sender: str):
+    """Background task: process message through Claude and send reply via Twilio."""
     try:
-        reply = await agent.handle_message(Body, sender=From)
+        reply = await agent.handle_message(body, sender=sender)
     except Exception as e:
         logger.error(f"Agent error: {e}", exc_info=True)
         reply = "Sorry, something went wrong processing your message. Try again in a bit!"
 
-    # Send reply via Twilio REST API using the WhatsApp number directly
     try:
         msg = _get_twilio_client().messages.create(
             body=reply,
             from_=TWILIO_WHATSAPP_NUMBER,
-            to=From,
+            to=sender,
         )
         logger.info(f"Reply sent - sid: {msg.sid}, status: {msg.status}")
     except Exception as e:
         logger.error(f"Twilio send error: {e}")
-
-    return PlainTextResponse("OK")
 
 
 if __name__ == "__main__":
