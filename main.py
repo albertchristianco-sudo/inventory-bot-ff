@@ -68,10 +68,13 @@ async def whatsapp_webhook(request: Request, background_tasks: BackgroundTasks):
         return Response(status_code=403)
 
     # Process in background so Twilio doesn't time out (15s limit)
-    # Return empty 200 immediately — no body, so Twilio won't send a double reply
+    # Return empty TwiML so Twilio knows not to send any message
     background_tasks.add_task(_process_and_reply, Body, From)
 
-    return Response(status_code=200)
+    return Response(
+        content="<Response></Response>",
+        media_type="text/xml",
+    )
 
 
 async def _process_and_reply(body: str, sender: str):
