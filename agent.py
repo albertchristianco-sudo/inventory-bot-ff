@@ -1,6 +1,7 @@
 import os
 import json
 import time
+import asyncio
 import anthropic
 import notion_client as notion
 
@@ -109,6 +110,9 @@ TOOLS = [
 # In-memory conversation store: {phone_number: {"messages": [...], "last_active": timestamp}}
 _conversations: dict[str, dict] = {}
 
+# Per-sender locks to prevent concurrent processing of messages from the same user
+_sender_locks: dict[str, asyncio.Lock] = {}
+
 
 def _get_conversation(sender: str) -> list[dict]:
     """Get or create conversation history for a sender. Expires after TTL."""
@@ -137,6 +141,15 @@ def _trim_conversation(sender: str):
 
 async def handle_message(user_message: str, sender: str = "default") -> str:
     """Process a WhatsApp message through Claude and return the response."""
+    # Serialize messages per sender so concurrent webhooks don't corrupt history
+    if sender not in _sender_locks:
+        _sender_locks[sender] = asyncio.Lock()
+    async with _sender_locks[sender]:
+        return await _handle_message_inner(user_message, sender)
+
+
+async def _handle_message_inner(user_message: str, sender: str) -> str:
+    """Inner handler — runs under per-sender lock."""
     client = anthropic.AsyncAnthropic(api_key=os.getenv("ANTHROPIC_API_KEY", "").strip())
 
     messages = _get_conversation(sender)
