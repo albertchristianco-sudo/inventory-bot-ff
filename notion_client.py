@@ -65,12 +65,27 @@ async def update_stock(page_id: str, new_stock: int) -> bool:
     return True
 
 
-async def update_price(page_id: str, new_price: float) -> bool:
-    """Update the price for a product."""
+# Map of allowed pricing field keys to their exact Notion property names
+PRICING_FIELDS = {
+    "unit_price": "Unit Price (₱)",
+    "landed_cost": "Landed Cost (₱)",
+    "min_sellable": "Min Sellable (Floor)",
+    "srp_1_5x": "SRP @ 1.5x + VAT (₱)",
+    "srp_2_0x": "SRP @ 2.0x + VAT (₱)",
+    "srp_3_0x": "SRP @ 3.0x + VAT (₱)",
+    "usd_per_pc": "USD/pc (Ex Works)",
+}
+
+
+async def update_price(page_id: str, new_price: float, field: str = "unit_price") -> bool:
+    """Update a pricing field for a product. Field must be a key from PRICING_FIELDS."""
+    notion_property = PRICING_FIELDS.get(field)
+    if not notion_property:
+        raise ValueError(f"Unknown pricing field: {field}. Valid fields: {list(PRICING_FIELDS.keys())}")
     url = f"{NOTION_BASE_URL}/pages/{page_id}"
     payload = {
         "properties": {
-            "Unit Price (₱)": {"number": new_price},
+            notion_property: {"number": new_price},
         }
     }
     async with httpx.AsyncClient() as client:

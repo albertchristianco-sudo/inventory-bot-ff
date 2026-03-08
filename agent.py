@@ -114,7 +114,7 @@ TOOLS = [
     },
     {
         "name": "update_price",
-        "description": "Update the price of a product.",
+        "description": "Update any pricing field for a product. Can set unit price, landed cost, min sellable, SRP tiers, or USD cost.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -124,10 +124,23 @@ TOOLS = [
                 },
                 "new_price": {
                     "type": "number",
-                    "description": "The new price in Philippine Pesos.",
+                    "description": "The new price value.",
+                },
+                "field": {
+                    "type": "string",
+                    "description": "Which pricing field to update.",
+                    "enum": [
+                        "unit_price",
+                        "landed_cost",
+                        "min_sellable",
+                        "srp_1_5x",
+                        "srp_2_0x",
+                        "srp_3_0x",
+                        "usd_per_pc",
+                    ],
                 },
             },
-            "required": ["page_id", "new_price"],
+            "required": ["page_id", "new_price", "field"],
         },
     },
     {
@@ -243,7 +256,7 @@ async def _execute_tool(name: str, inputs: dict, sender: str = "default") -> dic
             return {"success": True}
 
         elif name == "update_price":
-            await notion.update_price(inputs["page_id"], inputs["new_price"])
+            await notion.update_price(inputs["page_id"], inputs["new_price"], inputs.get("field", "unit_price"))
             return {"success": True}
 
         elif name == "log_sale":
