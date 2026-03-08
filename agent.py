@@ -193,15 +193,38 @@ def _get_conversation(sender: str) -> list[dict]:
 
 
 def _trim_conversation(sender: str):
-    """Keep conversation history within limits."""
+    """Keep conversation history within limits without breaking tool call pairs."""
     convo = _conversations.get(sender)
     if not convo:
         return
-    # Each exchange is roughly 2 messages (user + assistant), but tool calls add more.
-    # Trim from the front to keep recent context.
-    while len(convo["messages"]) > MAX_HISTORY:
-        convo["messages"].pop(0)
+    msgs = convo["messages"]
+    # Trim from the front, but never leave an orphaned tool_result without
+    # its matching tool_use in the previous assistant message.
+    while len(msgs) > MAX_HISTORY:
+        msgs.pop(0)
+    # After trimming, ensure the first message isn't a tool_result (role=user
+    # with tool_result content).  If it is, keep popping until we reach a clean
+    # user text message.
+    while msgs and _is_tool_result_message(msgs[0]):
+        msgs.pop(0)
+    # Also ensure we don't start with an assistant message (Claude API requires
+    # conversations to start with a user message).
+    while msgs and msgs[0].get("role") == "assistant":
+        msgs.pop(0)
     convo["last_active"] = time.time()
+
+
+def _is_tool_result_message(msg: dict) -> bool:
+    """Check if a message is a user message containing tool_result blocks."""
+    if msg.get("role") != "user":
+        return False
+    content = msg.get("content")
+    if isinstance(content, list):
+        return any(
+            isinstance(block, dict) and block.get("type") == "tool_result"
+            for block in content
+        )
+    return False
 
 
 async def handle_message(user_message: str, sender: str = "default") -> str:
