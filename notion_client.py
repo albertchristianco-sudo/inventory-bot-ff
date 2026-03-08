@@ -40,8 +40,12 @@ async def query_products(search_term: str = "") -> list[dict]:
             "stock": _get_number(props, "Stock"),
             "unit": _get_select(props, "Unit"),
             "price": _get_number(props, "Unit Price (₱)"),
+            "landed_cost": _get_number(props, "Landed Cost (₱)"),
+            "min_sellable": _get_number(props, "Min Sellable (Floor)"),
             "srp_1_5x": _get_number(props, "SRP @ 1.5x + VAT"),
             "srp_2_0x": _get_number(props, "SRP @ 2.0x + VAT"),
+            "srp_3_0x": _get_number(props, "SRP @ 3.0x + VAT"),
+            "usd_per_pc": _get_number(props, "USD/pc (Ex Works)"),
         })
     return products
 
