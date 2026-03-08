@@ -1,12 +1,11 @@
 import os
-import asyncio
 import logging
 from dotenv import load_dotenv
 
 load_dotenv(override=True)
 
-from fastapi import FastAPI, Form, Request
-from fastapi.responses import PlainTextResponse
+from fastapi import BackgroundTasks, FastAPI, Form, Request
+from fastapi.responses import PlainTextResponse, Response
 from twilio.rest import Client as TwilioClient
 from twilio.request_validator import RequestValidator
 
@@ -47,8 +46,11 @@ async def health():
     return {"status": "ok", "service": "Flame & Finish Inventory Bot"}
 
 
+EMPTY_TWIML = '<?xml version="1.0" encoding="UTF-8"?><Response></Response>'
+
+
 @app.post("/webhook")
-async def whatsapp_webhook(request: Request):
+async def whatsapp_webhook(request: Request, background_tasks: BackgroundTasks):
     """Receive incoming WhatsApp messages from Twilio."""
     form_data = await request.form()
     params = dict(form_data)
@@ -70,10 +72,10 @@ async def whatsapp_webhook(request: Request):
         return PlainTextResponse("Unauthorized", status_code=403)
 
     # Process in background so Twilio doesn't time out (15s limit)
-    # Return immediately, then send reply via REST API when ready
-    asyncio.create_task(_process_and_reply(Body, From))
+    # Return empty TwiML immediately, then send reply via REST API when ready
+    background_tasks.add_task(_process_and_reply, Body, From)
 
-    return PlainTextResponse("OK")
+    return Response(content=EMPTY_TWIML, media_type="text/xml")
 
 
 async def _process_and_reply(body: str, sender: str):
