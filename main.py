@@ -4,8 +4,7 @@ from dotenv import load_dotenv
 
 load_dotenv(override=True)
 
-from fastapi import BackgroundTasks, FastAPI, Form, Request
-from fastapi.responses import PlainTextResponse, Response
+from fastapi import BackgroundTasks, FastAPI, Request, Response
 from twilio.rest import Client as TwilioClient
 from twilio.request_validator import RequestValidator
 
@@ -64,12 +63,12 @@ async def whatsapp_webhook(request: Request, background_tasks: BackgroundTasks):
         url = str(request.url)
         if not _validate_twilio_signature(url, params, signature):
             logger.warning(f"Invalid Twilio signature from {From}")
-            return PlainTextResponse("Invalid signature", status_code=403)
+            return Response(status_code=403)
 
     # Restrict to allowed team numbers
     if ALLOWED_NUMBERS and From not in ALLOWED_NUMBERS:
         logger.warning(f"Unauthorized number: {From}")
-        return PlainTextResponse("Unauthorized", status_code=403)
+        return Response(status_code=403)
 
     # Process in background so Twilio doesn't time out (15s limit)
     # Return empty TwiML immediately, then send reply via REST API when ready

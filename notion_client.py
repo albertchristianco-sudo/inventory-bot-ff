@@ -35,10 +35,18 @@ async def query_products(search_term: str = "") -> list[dict]:
             "id": page["id"],
             "name": _get_title(props, "Product Name"),
             "category": _get_select(props, "Category"),
+            "item_group": _get_rich_text(props, "Item Group"),
+            "subcategory": _get_rich_text(props, "Subcategory"),
             "variant": _get_rich_text(props, "Color / Variant"),
             "stock": _get_number(props, "Stock"),
             "unit": _get_select(props, "Unit"),
             "price": _get_number(props, "Unit Price (₱)"),
+            "landed_cost": _get_number(props, "Landed Cost (₱)"),
+            "min_sellable": _get_number(props, "Min Sellable (Floor)"),
+            "srp_1_5x": _get_number(props, "SRP @ 1.5x + VAT (₱)"),
+            "srp_2_0x": _get_number(props, "SRP @ 2.0x + VAT (₱)"),
+            "srp_3_0x": _get_number(props, "SRP @ 3.0x + VAT (₱)"),
+            "usd_per_pc": _get_number(props, "USD/pc (Ex Works)"),
         })
     return products
 
@@ -57,12 +65,27 @@ async def update_stock(page_id: str, new_stock: int) -> bool:
     return True
 
 
-async def update_price(page_id: str, new_price: float) -> bool:
-    """Update the price for a product."""
+# Map of allowed pricing field keys to their exact Notion property names
+PRICING_FIELDS = {
+    "unit_price": "Unit Price (₱)",
+    "landed_cost": "Landed Cost (₱)",
+    "min_sellable": "Min Sellable (Floor)",
+    "srp_1_5x": "SRP @ 1.5x + VAT (₱)",
+    "srp_2_0x": "SRP @ 2.0x + VAT (₱)",
+    "srp_3_0x": "SRP @ 3.0x + VAT (₱)",
+    "usd_per_pc": "USD/pc (Ex Works)",
+}
+
+
+async def update_price(page_id: str, new_price: float, field: str = "unit_price") -> bool:
+    """Update a pricing field for a product. Field must be a key from PRICING_FIELDS."""
+    notion_property = PRICING_FIELDS.get(field)
+    if not notion_property:
+        raise ValueError(f"Unknown pricing field: {field}. Valid fields: {list(PRICING_FIELDS.keys())}")
     url = f"{NOTION_BASE_URL}/pages/{page_id}"
     payload = {
         "properties": {
-            "Unit Price (₱)": {"number": new_price},
+            notion_property: {"number": new_price},
         }
     }
     async with httpx.AsyncClient() as client:

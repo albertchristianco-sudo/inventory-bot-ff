@@ -26,7 +26,59 @@ Rules:
 - When processing a sale: (1) lookup the product, (2) update stock, (3) log the sale. Always do all three steps.
 - When updating stock after a sale, confirm the old stock, the deduction, and the new stock.
 - If a product isn't found, say so clearly and ask for clarification.
-- Keep replies short — this is WhatsApp, not email."""
+- Keep replies short — this is WhatsApp, not email.
+
+## Keyword Alias Map
+Users often use shorthand terms. Resolve them to the correct Notion database categories and item groups:
+
+**Category-level aliases:**
+- "SPC" → Category: SPC Flooring (covers floor tiles, reducers, skirting, T-moulding)
+- "WPC" or "wall panel" → Category: Wall Panels (covers all fluted boards)
+
+**Item Group aliases:**
+- "SPC floor" or "SPC flooring" → Item Group: SPC Floor
+- "reducer" → Item Group: SPC REDUCER
+- "skirting" → Item Group: SPC SKIRTING LINE
+- "t-moulding" or "t moulding" → Item Group: SPC T-MOULDING
+- "4 grilles" or "grilles board" → Item Group: WPC Fluted Panel, Subcategory: Fluted Board (4 flutes)
+- "solid small" or "small fluted" → Subcategory: Solid Small Fluted Board
+- "arch fluted" → Subcategory: Arch Fluted Board
+- "high fluted" → Subcategory: High Fluted Board
+- "outdoor decking" or "decking" → Item Group: OUTDOOR WPC DECKING 1ST GEN
+- "outdoor fluted" → Item Group: OUTDOOR FLUTED BOARD
+- "keel" → Item Group: OUTDOOR DECKING ACCESSORY 1ST GEN KEEL
+- "flexible tile" or "flex tile" → Item Group: FLEXIBLE TILE
+- "UV panel" or "PVC panel" or "UV" → Item Group: UV PANEL / PVC PANEL
+- "sound board" or "acoustic" → Item Group: SOUND ABSORPTION BOARD
+- "bamboo charcoal" or "bamboo" → Item Group: WPC BAMBOO CHARCOAL BOARD
+
+When searching, use the alias map to translate the user's shorthand into the correct search term for the lookup tool. If the user says a category-level alias (e.g. "SPC"), search broadly to return all matching item groups. If they use a specific item group alias (e.g. "reducer"), search for that specific item group.
+
+## Pricing Fields in the Database
+Every product in Notion has these pricing fields:
+- **landed_cost** — Landed Cost (₱): actual cost after import. This is the absolute floor — we CANNOT sell below this.
+- **min_sellable** — Min Sellable (Floor): minimum selling price, slightly above landed cost.
+- **srp_1_5x** — SRP @ 1.5x + VAT (₱): minimum recommended retail price.
+- **srp_2_0x** — SRP @ 2.0x + VAT (₱): standard selling price.
+- **srp_3_0x** — SRP @ 3.0x + VAT (₱): premium selling price.
+- **usd_per_pc** — USD/pc (Ex Works): original supplier price in USD.
+
+## Pricing Queries
+When a user asks about pricing (e.g. "how much should I sell SPC floor?", "what's the lowest price we can go?"):
+- Always look up the product(s) first using lookup_products.
+- Show the FULL pricing breakdown using this exact WhatsApp-friendly format:
+
+[Product Name] — Pricing Guide
+💰 Landed Cost: ₱XX.XX (your floor)
+⚠️ Min Sellable: ₱XX.XX
+📊 SRP Tiers:
+  1.5x: ₱XX.XX (minimum retail)
+  2.0x: ₱XX.XX (standard)
+  3.0x: ₱XX.XX (premium)
+
+- If a user asks "lowest price" or "floor price", emphasize that the Landed Cost is the absolute floor and the Min Sellable is the lowest they should actually sell at.
+- If any pricing field is not available for a product, omit that line and note it's not set.
+- When listing multiple products, use the same format for each."""
 
 TOOLS = [
     {
@@ -63,7 +115,7 @@ TOOLS = [
     },
     {
         "name": "update_price",
-        "description": "Update the price of a product.",
+        "description": "Update any pricing field for a product. Can set unit price, landed cost, min sellable, SRP tiers, or USD cost.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -73,10 +125,23 @@ TOOLS = [
                 },
                 "new_price": {
                     "type": "number",
-                    "description": "The new price in Philippine Pesos.",
+                    "description": "The new price value.",
+                },
+                "field": {
+                    "type": "string",
+                    "description": "Which pricing field to update.",
+                    "enum": [
+                        "unit_price",
+                        "landed_cost",
+                        "min_sellable",
+                        "srp_1_5x",
+                        "srp_2_0x",
+                        "srp_3_0x",
+                        "usd_per_pc",
+                    ],
                 },
             },
-            "required": ["page_id", "new_price"],
+            "required": ["page_id", "new_price", "field"],
         },
     },
     {
@@ -204,7 +269,7 @@ async def _execute_tool(name: str, inputs: dict, sender: str = "default") -> dic
             return {"success": True}
 
         elif name == "update_price":
-            await notion.update_price(inputs["page_id"], inputs["new_price"])
+            await notion.update_price(inputs["page_id"], inputs["new_price"], inputs.get("field", "unit_price"))
             return {"success": True}
 
         elif name == "log_sale":
