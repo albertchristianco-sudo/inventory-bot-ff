@@ -241,43 +241,54 @@ async def _handle_message_inner(user_message: str, sender: str) -> str:
     client = anthropic.AsyncAnthropic(api_key=os.getenv("ANTHROPIC_API_KEY", "").strip())
 
     messages = _get_conversation(sender)
+
+    # Snapshot message count so we can rollback on failure
+    snapshot_len = len(messages)
+
     messages.append({"role": "user", "content": user_message})
 
-    # Agentic loop: keep going until Claude produces a final text response
-    while True:
-        response = await client.messages.create(
-            model=MODEL,
-            max_tokens=1024,
-            system=SYSTEM_PROMPT,
-            tools=TOOLS,
-            messages=messages,
-        )
+    try:
+        # Agentic loop: keep going until Claude produces a final text response
+        while True:
+            response = await client.messages.create(
+                model=MODEL,
+                max_tokens=1024,
+                system=SYSTEM_PROMPT,
+                tools=TOOLS,
+                messages=messages,
+            )
 
-        # If Claude wants to use tools, execute them and continue the loop
-        if response.stop_reason == "tool_use":
-            messages.append({"role": "assistant", "content": response.content})
+            # If Claude wants to use tools, execute them and continue the loop
+            if response.stop_reason == "tool_use":
+                messages.append({"role": "assistant", "content": response.content})
 
-            tool_results = []
-            for block in response.content:
-                if block.type == "tool_use":
-                    result = await _execute_tool(block.name, block.input, sender)
-                    tool_results.append({
-                        "type": "tool_result",
-                        "tool_use_id": block.id,
-                        "content": json.dumps(result, ensure_ascii=False),
-                    })
+                tool_results = []
+                for block in response.content:
+                    if block.type == "tool_use":
+                        result = await _execute_tool(block.name, block.input, sender)
+                        tool_results.append({
+                            "type": "tool_result",
+                            "tool_use_id": block.id,
+                            "content": json.dumps(result, ensure_ascii=False),
+                        })
 
-            messages.append({"role": "user", "content": tool_results})
-            continue
+                messages.append({"role": "user", "content": tool_results})
+                continue
 
-        # Extract final text response and save to history
-        text_parts = [block.text for block in response.content if block.type == "text"]
-        reply = "\n".join(text_parts) if text_parts else "Sorry, I couldn't process that."
+            # Extract final text response and save to history
+            text_parts = [block.text for block in response.content if block.type == "text"]
+            reply = "\n".join(text_parts) if text_parts else "Sorry, I couldn't process that."
 
-        messages.append({"role": "assistant", "content": reply})
-        _trim_conversation(sender)
+            messages.append({"role": "assistant", "content": reply})
+            _trim_conversation(sender)
 
-        return reply
+            return reply
+
+    except Exception:
+        # Rollback conversation to pre-request state so a failed tool loop
+        # doesn't leave orphaned tool_use/tool_result messages in history.
+        del messages[snapshot_len:]
+        raise
 
 
 async def _execute_tool(name: str, inputs: dict, sender: str = "default") -> dict:

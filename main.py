@@ -1,5 +1,7 @@
 import os
+import time
 import logging
+from collections import OrderedDict
 from dotenv import load_dotenv
 
 load_dotenv(override=True)
@@ -12,6 +14,12 @@ import agent
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# Deduplication: track recently processed Twilio MessageSids to ignore retries.
+# Twilio can send the same webhook multiple times if it doesn't get a fast response.
+_seen_message_sids: OrderedDict[str, float] = OrderedDict()
+_DEDUP_TTL = 60  # seconds to remember a MessageSid
+_DEDUP_MAX = 200  # max entries to keep
 
 app = FastAPI(title="Flame & Finish Inventory Bot")
 
@@ -56,6 +64,22 @@ async def whatsapp_webhook(request: Request, background_tasks: BackgroundTasks):
 
     From = params.get("From", "")
     Body = params.get("Body", "")
+    message_sid = params.get("MessageSid", "")
+
+    # Deduplicate: Twilio may retry the webhook if our response is slow.
+    # Ignore messages we've already seen.
+    if message_sid:
+        now = time.time()
+        if message_sid in _seen_message_sids:
+            logger.info(f"Duplicate webhook ignored: MessageSid={message_sid}")
+            return Response(content=EMPTY_TWIML, media_type="text/xml")
+        _seen_message_sids[message_sid] = now
+        # Evict old entries
+        while _seen_message_sids and (
+            len(_seen_message_sids) > _DEDUP_MAX
+            or next(iter(_seen_message_sids.values())) < now - _DEDUP_TTL
+        ):
+            _seen_message_sids.popitem(last=False)
 
     # Validate Twilio signature (skip in dev — ngrok changes the URL which breaks validation)
     if os.getenv("VALIDATE_TWILIO_SIGNATURE", "false").lower() == "true":
