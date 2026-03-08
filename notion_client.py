@@ -35,10 +35,13 @@ async def query_products(search_term: str = "") -> list[dict]:
             "id": page["id"],
             "name": _get_title(props, "Product Name"),
             "category": _get_select(props, "Category"),
+            "item_group": _get_select(props, "Item Group"),
             "variant": _get_rich_text(props, "Color / Variant"),
             "stock": _get_number(props, "Stock"),
             "unit": _get_select(props, "Unit"),
             "price": _get_number(props, "Unit Price (₱)"),
+            "srp_1_5x": _get_number(props, "SRP @ 1.5x + VAT"),
+            "srp_2_0x": _get_number(props, "SRP @ 2.0x + VAT"),
         })
     return products
 

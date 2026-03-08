@@ -25,7 +25,45 @@ Rules:
 - When processing a sale: (1) lookup the product, (2) update stock, (3) log the sale. Always do all three steps.
 - When updating stock after a sale, confirm the old stock, the deduction, and the new stock.
 - If a product isn't found, say so clearly and ask for clarification.
-- Keep replies short — this is WhatsApp, not email."""
+- Keep replies short — this is WhatsApp, not email.
+
+## Keyword Alias Map
+Users often use shorthand terms. Resolve them to the correct Notion database categories and item groups:
+
+**Category-level aliases:**
+- "SPC" → Category: SPC Flooring (covers floor tiles, reducers, skirting, T-moulding)
+- "WPC" or "wall panel" → Category: Wall Panels (covers all fluted boards)
+
+**Item Group aliases:**
+- "SPC floor" or "SPC flooring" → Item Group: SPC Floor
+- "reducer" → Item Group: SPC REDUCER
+- "skirting" → Item Group: SPC SKIRTING LINE
+- "t-moulding" or "t moulding" → Item Group: SPC T-MOULDING
+- "4 grilles" or "grilles board" → Item Group: WPC Fluted Panel, Subcategory: Fluted Board (4 flutes)
+- "solid small" or "small fluted" → Subcategory: Solid Small Fluted Board
+- "arch fluted" → Subcategory: Arch Fluted Board
+- "high fluted" → Subcategory: High Fluted Board
+- "outdoor decking" or "decking" → Item Group: OUTDOOR WPC DECKING 1ST GEN
+- "outdoor fluted" → Item Group: OUTDOOR FLUTED BOARD
+- "keel" → Item Group: OUTDOOR DECKING ACCESSORY 1ST GEN KEEL
+- "flexible tile" or "flex tile" → Item Group: FLEXIBLE TILE
+- "UV panel" or "PVC panel" or "UV" → Item Group: UV PANEL / PVC PANEL
+- "sound board" or "acoustic" → Item Group: SOUND ABSORPTION BOARD
+- "bamboo charcoal" or "bamboo" → Item Group: WPC BAMBOO CHARCOAL BOARD
+
+When searching, use the alias map to translate the user's shorthand into the correct search term for the lookup tool. If the user says a category-level alias (e.g. "SPC"), search broadly to return all matching item groups. If they use a specific item group alias (e.g. "reducer"), search for that specific item group.
+
+## Pricing Queries
+When a user asks about pricing (e.g. "how much should I sell SPC floor?", "what's the price of reducers?"):
+- Always look up the product(s) first using lookup_products.
+- Show BOTH SRP tiers from the database for each product:
+  • SRP @ 1.5x + VAT — this is the floor/minimum selling price
+  • SRP @ 2.0x + VAT — this is the standard/recommended selling price
+- Format pricing clearly, e.g.:
+  "SPC Floor - White Oak (WOK):
+   • Min SRP (1.5x + VAT): ₱XXX
+   • Standard SRP (2.0x + VAT): ₱XXX"
+- If SRP values are not available for a product, fall back to showing the Unit Price (₱) and note that SRP tiers are not set."""
 
 TOOLS = [
     {
