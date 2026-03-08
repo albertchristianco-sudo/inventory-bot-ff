@@ -45,6 +45,9 @@ async def health():
     return {"status": "ok", "service": "Flame & Finish Inventory Bot"}
 
 
+EMPTY_TWIML = '<?xml version="1.0" encoding="UTF-8"?><Response></Response>'
+
+
 @app.post("/webhook")
 async def whatsapp_webhook(request: Request, background_tasks: BackgroundTasks):
     """Receive incoming WhatsApp messages from Twilio."""
@@ -68,13 +71,10 @@ async def whatsapp_webhook(request: Request, background_tasks: BackgroundTasks):
         return Response(status_code=403)
 
     # Process in background so Twilio doesn't time out (15s limit)
-    # Return empty TwiML so Twilio knows not to send any message
+    # Return empty TwiML immediately, then send reply via REST API when ready
     background_tasks.add_task(_process_and_reply, Body, From)
 
-    return Response(
-        content="<Response></Response>",
-        media_type="text/xml",
-    )
+    return Response(content=EMPTY_TWIML, media_type="text/xml")
 
 
 async def _process_and_reply(body: str, sender: str):
