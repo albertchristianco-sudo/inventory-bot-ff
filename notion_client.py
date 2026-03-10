@@ -34,19 +34,13 @@ async def query_products(search_term: str = "") -> list[dict]:
         products.append({
             "id": page["id"],
             "name": _get_title(props, "Product Name"),
+            "item_code": _get_rich_text(props, "FF Item Code"),
             "category": _get_select(props, "Category"),
-            "item_group": _get_rich_text(props, "Item Group"),
-            "subcategory": _get_rich_text(props, "Subcategory"),
-            "variant": _get_rich_text(props, "Color / Variant"),
             "stock": _get_number(props, "Stock"),
-            "unit": _get_select(props, "Unit"),
+            "stock_boxes": _get_number(props, "Stock (Boxes)"),
             "price": _get_number(props, "Unit Price (₱)"),
-            "landed_cost": _get_number(props, "Landed Cost (₱)"),
             "min_sellable": _get_number(props, "Min Sellable (Floor)"),
             "srp_1_5x": _get_number(props, "SRP @ 1.5x + VAT (₱)"),
-            "srp_2_0x": _get_number(props, "SRP @ 2.0x + VAT (₱)"),
-            "srp_3_0x": _get_number(props, "SRP @ 3.0x + VAT (₱)"),
-            "usd_per_pc": _get_number(props, "USD/pc (Ex Works)"),
         })
     return products
 
@@ -95,31 +89,64 @@ async def update_price(page_id: str, new_price: float, field: str = "unit_price"
 
 
 async def log_sale(
-    product_name: str,
+    customer_name: str,
+    product_sold: str,
     quantity: int,
+    unit: str,
     unit_price: float,
-    sold_by: str,
+    payment_method: str,
+    payment_status: str,
+    transaction_type: str,
+    handled_by: str,
+    customer_contact: str = "",
+    amount_received: float | None = None,
+    notes: str = "",
 ) -> bool:
-    """Log a sale transaction to the Sales Log database."""
+    """Log a sale transaction to the Daily Sales Ledger database."""
     from datetime import date
 
+    today = date.today().isoformat()
+    total = quantity * unit_price
+    balance_due = total - (amount_received if amount_received is not None else total)
+    if amount_received is None:
+        amount_received = total  # default: fully paid
+
+    sale_entry = f"{customer_name} - {product_sold} - {today}"
+
     url = f"{NOTION_BASE_URL}/pages"
+    properties: dict = {
+        "Sale Entry": {
+            "title": [{"text": {"content": sale_entry}}],
+        },
+        "Date": {"date": {"start": today}},
+        "Customer Name": {
+            "rich_text": [{"text": {"content": customer_name}}],
+        },
+        "Product Sold": {
+            "multi_select": [{"name": product_sold}],
+        },
+        "Quantity": {"number": quantity},
+        "Unit": {"select": {"name": unit}},
+        "Unit Price (₱)": {"number": unit_price},
+        "Total Amount (₱)": {"number": total},
+        "Payment Method": {"select": {"name": payment_method}},
+        "Payment Status": {"select": {"name": payment_status}},
+        "Amount Received (₱)": {"number": amount_received},
+        "Balance Due (₱)": {"number": balance_due},
+        "Transaction Type": {"select": {"name": transaction_type}},
+        "Handled By": {"select": {"name": handled_by}},
+    }
+
+    if customer_contact:
+        properties["Customer Contact"] = {"phone_number": customer_contact}
+    if notes:
+        properties["Notes"] = {
+            "rich_text": [{"text": {"content": notes}}],
+        }
+
     payload = {
         "parent": {"database_id": NOTION_SALES_DB_ID},
-        "properties": {
-            "Product": {
-                "title": [{"text": {"content": product_name}}],
-            },
-            "Quantity": {"number": quantity},
-            "Unit Price (₱)": {"number": unit_price},
-            "Total (₱)": {"number": quantity * unit_price},
-            "Sold By": {
-                "rich_text": [{"text": {"content": sold_by}}],
-            },
-            "Date": {
-                "date": {"start": date.today().isoformat()},
-            },
-        },
+        "properties": properties,
     }
     async with httpx.AsyncClient() as client:
         resp = await client.post(url, headers=NOTION_HEADERS, json=payload)

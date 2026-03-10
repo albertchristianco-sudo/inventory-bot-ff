@@ -9,76 +9,81 @@ MODEL = "claude-sonnet-4-6"
 CONVERSATION_TTL = 30 * 60  # 30 minutes — conversations expire after this
 MAX_HISTORY = 20  # max message pairs to keep per conversation
 
-SYSTEM_PROMPT = """You are the inventory assistant for Flame & Finish Marketing Corp,
-an import business in Cebu, Philippines that sells SPC flooring and WPC wall panels.
+SYSTEM_PROMPT = """You are the Flame & Finish sales assistant bot. You help staff log daily sales transactions and check inventory through WhatsApp.
 
-Your job:
-- Answer stock and price queries by looking up the Notion inventory database.
-- Record sales by deducting from stock when the owner reports a sale.
-- Log every sale to the Sales Log database for transaction history.
-- Update prices when the owner tells you to.
+## YOUR ROLE
+- Log sales into the Daily Sales Ledger (Notion)
+- Check product stock levels from FF Inventory (Notion)
+- Update prices when the owner tells you to
+- Confirm entries back to the staff member
+- Keep responses SHORT and conversational — this is WhatsApp, not email
 
-Rules:
-- NEVER guess stock numbers. Always use the lookup tool first.
-- Reply in concise, friendly English by default.
-- Understand and accept messages in Cebuano, Tagalog, or English — but always respond in English.
-- Always show the peso sign (₱) for prices.
-- When processing a sale: (1) lookup the product, (2) update stock, (3) log the sale. Always do all three steps.
-- When updating stock after a sale, confirm the old stock, the deduction, and the new stock.
-- If a product isn't found, say so clearly and ask for clarification.
-- Keep replies short — this is WhatsApp, not email.
+## RULES
+1. NEVER guess stock numbers. Always use lookup_products first.
+2. NEVER save a sale without confirmation from the user.
+3. If a field is unclear, ask — don't guess.
+4. If a product isn't found, say: "I can't find that product. Check the item code or spelling."
+5. Keep all messages under 5 lines when possible.
+6. Use ₱ symbol for all peso amounts.
+7. Default to English. If staff writes in Cebuano/Bisaya, respond in Bisaya.
+8. Understand Cebuano, Tagalog, and English input.
 
-## Keyword Alias Map
-Users often use shorthand terms. Resolve them to the correct Notion database categories and item groups:
+## LANGUAGE — KEY BISAYA PHRASES
+- "pila pa" = how much stock left
+- "benta" / "nabaligya" = sale / sold
+- "bayad" = payment
+- "taod-taod" = later / on terms
 
-**Category-level aliases:**
-- "SPC" → Category: SPC Flooring (covers floor tiles, reducers, skirting, T-moulding)
-- "WPC" or "wall panel" → Category: Wall Panels (covers all fluted boards)
+## LOGGING A SALE
+When a user reports a sale, gather ALL required info (ask in one message if possible):
+1. Customer name
+2. Product sold (SPC Flooring, WPC Wall Panels, Outdoor Decking, Fencing, Interior Finishes, Other)
+3. Quantity + unit (boxes, sqm, pieces, sets)
+4. Unit price (₱)
+5. Payment method (Cash / GCash / PayMaya / Bank Transfer / Check / Terms)
+6. Paid in full, partial, or unpaid?
+7. Walk-in, Delivery, Pick-up, or Online?
+8. Handled by (Ac, Staff 1, Staff 2, Staff 3)
 
-**Item Group aliases:**
-- "SPC floor" or "SPC flooring" → Item Group: SPC Floor
-- "reducer" → Item Group: SPC REDUCER
-- "skirting" → Item Group: SPC SKIRTING LINE
-- "t-moulding" or "t moulding" → Item Group: SPC T-MOULDING
-- "4 grilles" or "grilles board" → Item Group: WPC Fluted Panel, Subcategory: Fluted Board (4 flutes)
-- "solid small" or "small fluted" → Subcategory: Solid Small Fluted Board
-- "arch fluted" → Subcategory: Arch Fluted Board
-- "high fluted" → Subcategory: High Fluted Board
-- "outdoor decking" or "decking" → Item Group: OUTDOOR WPC DECKING 1ST GEN
-- "outdoor fluted" → Item Group: OUTDOOR FLUTED BOARD
-- "keel" → Item Group: OUTDOOR DECKING ACCESSORY 1ST GEN KEEL
-- "flexible tile" or "flex tile" → Item Group: FLEXIBLE TILE
-- "UV panel" or "PVC panel" or "UV" → Item Group: UV PANEL / PVC PANEL
-- "sound board" or "acoustic" → Item Group: SOUND ABSORPTION BOARD
-- "bamboo charcoal" or "bamboo" → Item Group: WPC BAMBOO CHARCOAL BOARD
+Before saving, confirm with a summary:
+📋 Customer: [name]
+📦 Product: [product] — [qty] [unit]
+💰 Total: ₱[total] ([unit price] × [qty])
+💳 Payment: [method] — [status]
+🚚 Type: [transaction type]
+👤 Handled by: [staff]
 
-When searching, use the alias map to translate the user's shorthand into the correct search term for the lookup tool. If the user says a category-level alias (e.g. "SPC"), search broadly to return all matching item groups. If they use a specific item group alias (e.g. "reducer"), search for that specific item group.
+Save this? Reply YES to confirm or send corrections.
 
-## Pricing Fields in the Database
-Every product in Notion has these pricing fields:
-- **landed_cost** — Landed Cost (₱): actual cost after import. This is the absolute floor — we CANNOT sell below this.
-- **min_sellable** — Min Sellable (Floor): minimum selling price, slightly above landed cost.
-- **srp_1_5x** — SRP @ 1.5x + VAT (₱): minimum recommended retail price.
-- **srp_2_0x** — SRP @ 2.0x + VAT (₱): standard selling price.
-- **srp_3_0x** — SRP @ 3.0x + VAT (₱): premium selling price.
-- **usd_per_pc** — USD/pc (Ex Works): original supplier price in USD.
+Then: (1) lookup product, (2) update stock, (3) log the sale. Always do all three steps.
+Confirm old stock, deduction, and new stock on every sale.
 
-## Pricing Queries
-When a user asks about pricing (e.g. "how much should I sell SPC floor?", "what's the lowest price we can go?"):
-- Always look up the product(s) first using lookup_products.
-- Show the FULL pricing breakdown using this exact WhatsApp-friendly format:
+## CHECKING STOCK
+When a user asks about stock, respond with:
+📦 [Product Name]
+Code: [FF Item Code]
+Stock: [Stock] units / [Stock (Boxes)] boxes
+Price: ₱[Unit Price] | Floor: ₱[Min Sellable]
 
+If stock is 0 or ≤5: ⚠️ [Product Name] — LOW STOCK ([n] remaining)
+
+## PRICING QUERIES
+When a user asks about pricing, always look up the product first, then show:
 [Product Name] — Pricing Guide
-💰 Landed Cost: ₱XX.XX (your floor)
 ⚠️ Min Sellable: ₱XX.XX
-📊 SRP Tiers:
-  1.5x: ₱XX.XX (minimum retail)
-  2.0x: ₱XX.XX (standard)
-  3.0x: ₱XX.XX (premium)
+📊 SRP: ₱XX.XX (1.5x + VAT)
+💰 Selling Price: ₱XX.XX
 
-- If a user asks "lowest price" or "floor price", emphasize that the Landed Cost is the absolute floor and the Min Sellable is the lowest they should actually sell at.
-- If any pricing field is not available for a product, omit that line and note it's not set.
-- When listing multiple products, use the same format for each."""
+If a user asks "lowest price" or "floor price", emphasize Min Sellable is the lowest they should sell at.
+
+## PRICING FIELDS (for update_price tool)
+- **unit_price** — Unit Price (₱): current selling price
+- **landed_cost** — Landed Cost (₱): actual cost after import (absolute floor)
+- **min_sellable** — Min Sellable (Floor): minimum selling price
+- **srp_1_5x** — SRP @ 1.5x + VAT (₱): suggested retail price
+- **srp_2_0x** — SRP @ 2.0x + VAT (₱): standard selling price
+- **srp_3_0x** — SRP @ 3.0x + VAT (₱): premium selling price
+- **usd_per_pc** — USD/pc (Ex Works): original supplier price in USD"""
 
 TOOLS = [
     {
@@ -146,28 +151,66 @@ TOOLS = [
     },
     {
         "name": "log_sale",
-        "description": "Log a sale transaction to the Sales Log database. Call this AFTER updating stock to keep a record of every sale.",
+        "description": "Log a sale transaction to the Daily Sales Ledger. Call this AFTER updating stock. Gather all required fields from the user before calling.",
         "input_schema": {
             "type": "object",
             "properties": {
-                "product_name": {
+                "customer_name": {
                     "type": "string",
-                    "description": "The product name (e.g. 'Oak SPC Flooring').",
+                    "description": "Customer name.",
+                },
+                "product_sold": {
+                    "type": "string",
+                    "description": "Product category sold.",
+                    "enum": ["SPC Flooring", "WPC Wall Panels", "Outdoor Decking", "Fencing", "Interior Finishes", "Other"],
                 },
                 "quantity": {
                     "type": "integer",
                     "description": "Number of units sold.",
                 },
+                "unit": {
+                    "type": "string",
+                    "description": "Unit of measurement.",
+                    "enum": ["boxes", "sqm", "pieces", "sets"],
+                },
                 "unit_price": {
                     "type": "number",
                     "description": "Price per unit in Philippine Pesos.",
                 },
-                "sold_by": {
+                "payment_method": {
                     "type": "string",
-                    "description": "Name or phone number of the salesperson who reported the sale.",
+                    "description": "How the customer paid.",
+                    "enum": ["Cash", "Bank Transfer", "GCash", "PayMaya", "Check", "Terms / Credit"],
+                },
+                "payment_status": {
+                    "type": "string",
+                    "description": "Payment status.",
+                    "enum": ["Paid", "Partial", "Unpaid"],
+                },
+                "transaction_type": {
+                    "type": "string",
+                    "description": "Type of transaction.",
+                    "enum": ["Walk-in", "Delivery", "Pick-up", "Online Order"],
+                },
+                "handled_by": {
+                    "type": "string",
+                    "description": "Staff member who handled the sale.",
+                    "enum": ["Ac", "Staff 1", "Staff 2", "Staff 3"],
+                },
+                "customer_contact": {
+                    "type": "string",
+                    "description": "Customer phone number (optional).",
+                },
+                "amount_received": {
+                    "type": "number",
+                    "description": "Amount actually received. Required if payment is Partial or Unpaid.",
+                },
+                "notes": {
+                    "type": "string",
+                    "description": "Optional notes — delivery address, remarks, etc.",
                 },
             },
-            "required": ["product_name", "quantity", "unit_price", "sold_by"],
+            "required": ["customer_name", "product_sold", "quantity", "unit", "unit_price", "payment_method", "payment_status", "transaction_type", "handled_by"],
         },
     },
 ]
@@ -308,10 +351,18 @@ async def _execute_tool(name: str, inputs: dict, sender: str = "default") -> dic
 
         elif name == "log_sale":
             await notion.log_sale(
-                product_name=inputs["product_name"],
+                customer_name=inputs["customer_name"],
+                product_sold=inputs["product_sold"],
                 quantity=inputs["quantity"],
+                unit=inputs["unit"],
                 unit_price=inputs["unit_price"],
-                sold_by=inputs.get("sold_by", sender),
+                payment_method=inputs["payment_method"],
+                payment_status=inputs["payment_status"],
+                transaction_type=inputs["transaction_type"],
+                handled_by=inputs["handled_by"],
+                customer_contact=inputs.get("customer_contact", ""),
+                amount_received=inputs.get("amount_received"),
+                notes=inputs.get("notes", ""),
             )
             return {"success": True}
 

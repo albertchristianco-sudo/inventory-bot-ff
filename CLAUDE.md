@@ -41,31 +41,42 @@ WhatsApp Message
 ## Notion Databases
 
 ### FF Inventory (`NOTION_DATABASE_ID`)
-- **Database ID:** `be5c97b473404310ab877f8fad4f2856`
+- **Database ID:** `efea8a8d-02b2-4148-93f8-ddc7e5046ba9`
 - **Properties:**
   - `Product Name` (title) — e.g. "WHITE OAK (WOK) DY 2008"
-  - `Category` (select) — "SPC Flooring", "Wall Panels", "Outdoor Products"
-  - `Color / Variant` (rich_text)
+  - `FF Item Code` (rich_text) — unique code like FF-SPCFWG-CL04
+  - `Category` (select) — "SPC Flooring", "WPC Wall Panels", "Outdoor Decking", etc.
   - `Stock` (number) — current stock count
-  - `Unit` (select) — "pcs", "boxes", etc.
-  - `Unit Price (₱)` (number) — price in Philippine Pesos
-- ~40+ products across 3 categories
+  - `Stock (Boxes)` (number) — stock in boxes
+  - `Unit Price (₱)` (number) — selling price in Philippine Pesos
+  - `Min Sellable (Floor)` (number) — minimum price floor
+  - `SRP @ 1.5x + VAT (₱)` (number) — suggested retail price
 
-### FF Sales Log (`NOTION_SALES_DB_ID`)
-- **Database ID:** `91f464cc6f194a56be9e7ac591b8a483`
+### Daily Sales Ledger (`NOTION_SALES_DB_ID`)
+- **Database ID:** `bb0c3244-6578-46ad-9ccc-6a582f099d19`
 - **Properties:**
-  - `Product` (title) — product name
+  - `Sale Entry` (title) — auto-generated: "[Customer] - [Product] - [Date]"
+  - `Date` (date) — sale date (ISO 8601)
+  - `Customer Name` (rich_text)
+  - `Customer Contact` (phone) — optional
+  - `Product Sold` (multi_select) — SPC Flooring, WPC Wall Panels, Outdoor Decking, Fencing, Interior Finishes, Other
   - `Quantity` (number)
+  - `Unit` (select) — boxes, sqm, pieces, sets
   - `Unit Price (₱)` (number)
-  - `Total (₱)` (number) — auto-calculated: quantity * unit price
-  - `Sold By` (rich_text) — salesperson phone number or name
-  - `Date` (date) — sale date
+  - `Total Amount (₱)` (number) — Quantity × Unit Price
+  - `Payment Method` (select) — Cash, Bank Transfer, GCash, PayMaya, Check, Terms / Credit
+  - `Payment Status` (select) — Paid, Partial, Unpaid
+  - `Amount Received (₱)` (number)
+  - `Balance Due (₱)` (number) — Total Amount - Amount Received
+  - `Transaction Type` (select) — Walk-in, Delivery, Pick-up, Online Order
+  - `Handled By` (select) — Ac, Staff 1, Staff 2, Staff 3
+  - `Notes` (rich_text) — optional remarks
 
 ## Agent Tools (defined in agent.py)
 1. **lookup_products** — Search inventory by keyword or get all products
 2. **update_stock** — Set new stock quantity by page ID
-3. **update_price** — Set new price by page ID
-4. **log_sale** — Record a sale (product, quantity, unit price, sold_by)
+3. **update_price** — Set any pricing field (unit price, landed cost, min sellable, SRP tiers, USD cost)
+4. **log_sale** — Record a sale with full details (customer, product, quantity, unit, price, payment, transaction type, handler)
 
 ## Agent Behavior
 - Responds in **English by default**
