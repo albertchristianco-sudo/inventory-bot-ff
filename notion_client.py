@@ -36,9 +36,10 @@ async def query_products(search_term: str = "") -> list[dict]:
             "name": _get_title(props, "Product Name"),
             "item_code": _get_rich_text(props, "FF Item Code"),
             "category": _get_select(props, "Category"),
+            "color_attribute": _get_rich_text(props, "Color/Attribute"),
             "stock": _get_number(props, "Stock"),
             "stock_boxes": _get_number(props, "Stock (Boxes)"),
-            "price": _get_number(props, "Unit Price (₱)"),
+            "price": _get_number(props, "Unit Price"),
             "min_sellable": _get_number(props, "Min Sellable (Floor)"),
             "srp_1_5x": _get_number(props, "SRP @ 1.5x + VAT (₱)"),
         })
@@ -61,7 +62,7 @@ async def update_stock(page_id: str, new_stock: int) -> bool:
 
 # Map of allowed pricing field keys to their exact Notion property names
 PRICING_FIELDS = {
-    "unit_price": "Unit Price (₱)",
+    "unit_price": "Unit Price",
     "landed_cost": "Landed Cost (₱)",
     "min_sellable": "Min Sellable (Floor)",
     "srp_1_5x": "SRP @ 1.5x + VAT (₱)",
@@ -127,7 +128,7 @@ async def log_sale(
         },
         "Quantity": {"number": quantity},
         "Unit": {"select": {"name": unit}},
-        "Unit Price (₱)": {"number": unit_price},
+        "Unit Price": {"number": unit_price},
         "Total Amount (₱)": {"number": total},
         "Payment Method": {"select": {"name": payment_method}},
         "Payment Status": {"select": {"name": payment_status}},

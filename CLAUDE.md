@@ -46,9 +46,10 @@ WhatsApp Message
   - `Product Name` (title) — e.g. "WHITE OAK (WOK) DY 2008"
   - `FF Item Code` (rich_text) — unique code like FF-SPCFWG-CL04
   - `Category` (select) — "SPC Flooring", "WPC Wall Panels", "Outdoor Decking", etc.
+  - `Color/Attribute` (rich_text)
   - `Stock` (number) — current stock count
   - `Stock (Boxes)` (number) — stock in boxes
-  - `Unit Price (₱)` (number) — selling price in Philippine Pesos
+  - `Unit Price` (number) — selling price in Philippine Pesos
   - `Min Sellable (Floor)` (number) — minimum price floor
   - `SRP @ 1.5x + VAT (₱)` (number) — suggested retail price
 
@@ -62,7 +63,7 @@ WhatsApp Message
   - `Product Sold` (multi_select) — SPC Flooring, WPC Wall Panels, Outdoor Decking, Fencing, Interior Finishes, Other
   - `Quantity` (number)
   - `Unit` (select) — boxes, sqm, pieces, sets
-  - `Unit Price (₱)` (number)
+  - `Unit Price` (number)
   - `Total Amount (₱)` (number) — Quantity × Unit Price
   - `Payment Method` (select) — Cash, Bank Transfer, GCash, PayMaya, Check, Terms / Credit
   - `Payment Status` (select) — Paid, Partial, Unpaid
@@ -143,7 +144,7 @@ VALIDATE_TWILIO_SIGNATURE — "true" or "false" (false for sandbox/dev)
 3. **`.strip()` on API keys** — Railway env vars can have trailing `\n` which causes `Illegal header value` errors.
 4. **`load_dotenv(override=True)`** — Needed because system may have empty `ANTHROPIC_API_KEY` env var that blocks dotenv.
 5. **Twilio signature validation disabled** — Set `VALIDATE_TWILIO_SIGNATURE=false` for dev/sandbox. Enable for production.
-6. **Notion property names matter** — Must match exactly: "Color / Variant" (not "Variant"), "Unit Price (₱)" (not "Price").
+6. **Notion property names matter** — Must match exactly: "Color/Attribute" (not "Variant"), "Unit Price" (not "Price").
 7. **Conversation memory is in-memory** — Resets on every Railway redeploy. Fine for now, could add Redis later.
 8. **Twilio error 63112** — Meta disabled the WhatsApp Business Account. Need to resolve via Meta Business Manager before production number can send replies.
 
