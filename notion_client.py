@@ -1,15 +1,23 @@
 import os
+import logging
 import httpx
 
-NOTION_API_KEY = os.getenv("NOTION_API_KEY")
-NOTION_DATABASE_ID = os.getenv("NOTION_DATABASE_ID")
-NOTION_SALES_DB_ID = os.getenv("NOTION_SALES_DB_ID")
+logger = logging.getLogger(__name__)
+
+NOTION_API_KEY = (os.getenv("NOTION_API_KEY") or "").strip()
+NOTION_DATABASE_ID = (os.getenv("NOTION_DATABASE_ID") or "").strip()
+NOTION_SALES_DB_ID = (os.getenv("NOTION_SALES_DB_ID") or "").strip()
 NOTION_BASE_URL = "https://api.notion.com/v1"
-NOTION_HEADERS = {
-    "Authorization": f"Bearer {NOTION_API_KEY}",
-    "Notion-Version": "2022-06-28",
-    "Content-Type": "application/json",
-}
+
+
+def _get_headers() -> dict:
+    """Build Notion headers lazily so env vars with trailing whitespace are handled."""
+    api_key = (os.getenv("NOTION_API_KEY") or "").strip()
+    return {
+        "Authorization": f"Bearer {api_key}",
+        "Notion-Version": "2022-06-28",
+        "Content-Type": "application/json",
+    }
 
 
 async def query_products(search_term: str = "") -> list[dict]:
@@ -24,7 +32,7 @@ async def query_products(search_term: str = "") -> list[dict]:
         }
 
     async with httpx.AsyncClient() as client:
-        resp = await client.post(url, headers=NOTION_HEADERS, json=payload)
+        resp = await client.post(url, headers=_get_headers(), json=payload)
         resp.raise_for_status()
         data = resp.json()
 
@@ -60,7 +68,7 @@ async def update_stock(page_id: str, new_stock: int) -> bool:
         }
     }
     async with httpx.AsyncClient() as client:
-        resp = await client.patch(url, headers=NOTION_HEADERS, json=payload)
+        resp = await client.patch(url, headers=_get_headers(), json=payload)
         resp.raise_for_status()
     return True
 
@@ -89,7 +97,7 @@ async def update_price(page_id: str, new_price: float, field: str = "unit_price"
         }
     }
     async with httpx.AsyncClient() as client:
-        resp = await client.patch(url, headers=NOTION_HEADERS, json=payload)
+        resp = await client.patch(url, headers=_get_headers(), json=payload)
         resp.raise_for_status()
     return True
 
@@ -122,7 +130,7 @@ async def log_sale(
         },
     }
     async with httpx.AsyncClient() as client:
-        resp = await client.post(url, headers=NOTION_HEADERS, json=payload)
+        resp = await client.post(url, headers=_get_headers(), json=payload)
         resp.raise_for_status()
     return True
 

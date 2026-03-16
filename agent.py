@@ -2,8 +2,11 @@ import os
 import json
 import time
 import asyncio
+import logging
 import anthropic
 import notion_client as notion
+
+logger = logging.getLogger(__name__)
 
 MODEL = "claude-sonnet-4-6"
 CONVERSATION_TTL = 30 * 60  # 30 minutes — conversations expire after this
@@ -319,4 +322,5 @@ async def _execute_tool(name: str, inputs: dict, sender: str = "default") -> dic
             return {"error": f"Unknown tool: {name}"}
 
     except Exception as e:
+        logger.error(f"Tool '{name}' failed: {e}", exc_info=True)
         return {"error": str(e)}
