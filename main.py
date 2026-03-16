@@ -23,6 +23,11 @@ _DEDUP_MAX = 200  # max entries to keep
 
 app = FastAPI(title="Flame & Finish Inventory Bot")
 
+# Log env var status at startup so we can diagnose config issues in Railway logs
+logger.info(f"NOTION_API_KEY set: {bool(os.getenv('NOTION_API_KEY', '').strip())}")
+logger.info(f"NOTION_DATABASE_ID: {os.getenv('NOTION_DATABASE_ID', '(not set)').strip()[:8]}...")
+logger.info(f"ANTHROPIC_API_KEY set: {bool(os.getenv('ANTHROPIC_API_KEY', '').strip())}")
+
 TWILIO_WHATSAPP_NUMBER = os.getenv("TWILIO_WHATSAPP_NUMBER")
 
 # Authorized team numbers — comma-separated in .env

@@ -20,6 +20,24 @@ def _get_headers() -> dict:
     }
 
 
+def _check_response(resp: httpx.Response) -> None:
+    """Raise with Notion's error details instead of a generic HTTP error."""
+    if resp.is_success:
+        return
+    # Notion error responses include a JSON body with details
+    try:
+        body = resp.json()
+        notion_msg = body.get("message", resp.text)
+    except Exception:
+        notion_msg = resp.text
+    logger.error(f"Notion API error {resp.status_code}: {notion_msg} (URL: {resp.url})")
+    raise httpx.HTTPStatusError(
+        f"Notion {resp.status_code}: {notion_msg}",
+        request=resp.request,
+        response=resp,
+    )
+
+
 async def query_products(search_term: str = "") -> list[dict]:
     """Query the Notion inventory database. Optionally filter by product name."""
     url = f"{NOTION_BASE_URL}/databases/{NOTION_DATABASE_ID}/query"
@@ -33,7 +51,7 @@ async def query_products(search_term: str = "") -> list[dict]:
 
     async with httpx.AsyncClient() as client:
         resp = await client.post(url, headers=_get_headers(), json=payload)
-        resp.raise_for_status()
+        _check_response(resp)
         data = resp.json()
 
     products = []
@@ -69,7 +87,7 @@ async def update_stock(page_id: str, new_stock: int) -> bool:
     }
     async with httpx.AsyncClient() as client:
         resp = await client.patch(url, headers=_get_headers(), json=payload)
-        resp.raise_for_status()
+        _check_response(resp)
     return True
 
 
@@ -98,7 +116,7 @@ async def update_price(page_id: str, new_price: float, field: str = "unit_price"
     }
     async with httpx.AsyncClient() as client:
         resp = await client.patch(url, headers=_get_headers(), json=payload)
-        resp.raise_for_status()
+        _check_response(resp)
     return True
 
 
@@ -131,7 +149,7 @@ async def log_sale(
     }
     async with httpx.AsyncClient() as client:
         resp = await client.post(url, headers=_get_headers(), json=payload)
-        resp.raise_for_status()
+        _check_response(resp)
     return True
 
 
