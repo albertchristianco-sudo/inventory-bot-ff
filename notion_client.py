@@ -128,7 +128,7 @@ async def log_sale(
         },
         "Quantity": {"number": quantity},
         "Unit": {"select": {"name": unit}},
-        "Unit Price": {"number": unit_price},
+        "Unit Price (₱)": {"number": unit_price},
         "Total Amount (₱)": {"number": total},
         "Payment Method": {"select": {"name": payment_method}},
         "Payment Status": {"select": {"name": payment_status}},

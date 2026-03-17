@@ -41,7 +41,7 @@ WhatsApp Message
 ## Notion Databases
 
 ### FF Inventory (`NOTION_DATABASE_ID`)
-- **Database ID:** `efea8a8d-02b2-4148-93f8-ddc7e5046ba9`
+- **Database ID:** `be5c97b4-7340-4310-ab87-7f8fad4f2856`
 - **Properties:**
   - `Product Name` (title) — e.g. "WHITE OAK (WOK) DY 2008"
   - `FF Item Code` (rich_text) — unique code like FF-SPCFWG-CL04
@@ -54,7 +54,7 @@ WhatsApp Message
   - `SRP @ 1.5x + VAT (₱)` (number) — suggested retail price
 
 ### Daily Sales Ledger (`NOTION_SALES_DB_ID`)
-- **Database ID:** `bb0c3244-6578-46ad-9ccc-6a582f099d19`
+- **Database ID:** `5330a1dc-4524-43c4-867f-58a64a21da61`
 - **Properties:**
   - `Sale Entry` (title) — auto-generated: "[Customer] - [Product] - [Date]"
   - `Date` (date) — sale date (ISO 8601)
@@ -63,7 +63,7 @@ WhatsApp Message
   - `Product Sold` (multi_select) — SPC Flooring, WPC Wall Panels, Outdoor Decking, Fencing, Interior Finishes, Other
   - `Quantity` (number)
   - `Unit` (select) — boxes, sqm, pieces, sets
-  - `Unit Price` (number)
+  - `Unit Price (₱)` (number)
   - `Total Amount (₱)` (number) — Quantity × Unit Price
   - `Payment Method` (select) — Cash, Bank Transfer, GCash, PayMaya, Check, Terms / Credit
   - `Payment Status` (select) — Paid, Partial, Unpaid
