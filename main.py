@@ -28,6 +28,7 @@ app = FastAPI(title="Flame & Finish Inventory Bot")
 TWILIO_WHATSAPP_NUMBER = os.getenv("TWILIO_WHATSAPP_NUMBER")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+OWNER_WHATSAPP_NUMBER = os.getenv("OWNER_WHATSAPP_NUMBER")
 
 # Authorized team numbers — comma-separated in .env
 _allowed_raw = os.getenv("ALLOWED_NUMBERS", "")
@@ -50,6 +51,39 @@ def _validate_twilio_signature(url: str, params: dict, signature: str) -> bool:
         return False
     validator = RequestValidator(token)
     return validator.validate(url, params, signature)
+
+
+# --- Scheduled daily report (6PM Mon-Sat, Philippine time UTC+8) ---
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.cron import CronTrigger
+import asyncio
+
+scheduler = AsyncIOScheduler()
+
+
+def _scheduled_daily_report():
+    """Wrapper to run the async daily report from the sync scheduler callback."""
+    asyncio.ensure_future(_run_daily_report())
+
+
+scheduler.add_job(
+    _scheduled_daily_report,
+    CronTrigger(hour=18, minute=0, day_of_week="mon-sat", timezone="Asia/Manila"),
+    id="daily_report",
+    name="6PM Daily Sales Report (Mon-Sat)",
+    replace_existing=True,
+)
+
+
+@app.on_event("startup")
+async def startup_event():
+    scheduler.start()
+    logger.info("APScheduler started — daily report scheduled at 6PM Mon-Sat (Asia/Manila)")
+
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    scheduler.shutdown()
 
 
 @app.get("/")
@@ -137,6 +171,24 @@ async def _send_telegram(text: str) -> bool:
     return ok
 
 
+async def _send_whatsapp_alert(text: str) -> bool:
+    """Send a WhatsApp message to the owner for clarification on mismatched sales."""
+    if not OWNER_WHATSAPP_NUMBER or not TWILIO_WHATSAPP_NUMBER:
+        logger.warning("Owner WhatsApp not configured — skipping alert")
+        return False
+    try:
+        msg = _get_twilio_client().messages.create(
+            body=text,
+            from_=TWILIO_WHATSAPP_NUMBER,
+            to=OWNER_WHATSAPP_NUMBER,
+        )
+        logger.info(f"WhatsApp alert sent to owner - sid: {msg.sid}")
+        return True
+    except Exception as e:
+        logger.error(f"WhatsApp alert failed: {e}")
+        return False
+
+
 async def _run_daily_report() -> dict:
     from datetime import date
     today_str = date.today().strftime("%B %d, %Y")
@@ -178,7 +230,17 @@ async def _run_daily_report() -> dict:
             if new_stock < 20:
                 alerts.append(f"⚠️ {inv['name']} ({inv['color']}): {new_stock} pcs left — REORDER NEEDED")
         else:
-            alerts.append(f"⚠️ No inventory match for: {sale['category']} / {sale['color']} (check manually)")
+            alert_msg = f"⚠️ No inventory match for: {sale['category']} / {sale['color']} (check manually)"
+            alerts.append(alert_msg)
+            await _send_whatsapp_alert(
+                f"🔍 Daily Report — Need Clarification\n\n"
+                f"I couldn't match this sale to inventory:\n"
+                f"• Category: {sale['category']}\n"
+                f"• Color: {sale['color'] or '—'}\n"
+                f"• Qty: {int(qty)} {sale['unit'] or 'pcs'}\n"
+                f"• Buyer: {buyer}\n\n"
+                f"Please check manually and update inventory if needed."
+            )
 
         unit = sale["unit"] or "pcs"
         lines.append(f"• {sale['category']} ({sale['color']}) — {int(qty)} {unit} @ P{price:,.0f} = P{subtotal:,.0f}")
