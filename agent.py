@@ -1,6 +1,7 @@
 import os
 import json
 import time
+import asyncio
 import anthropic
 import notion_client as notion
 
@@ -217,6 +218,9 @@ TOOLS = [
 # In-memory conversation store: {phone_number: {"messages": [...], "last_active": timestamp}}
 _conversations: dict[str, dict] = {}
 
+# Per-sender locks to prevent concurrent processing of messages from the same user
+_sender_locks: dict[str, asyncio.Lock] = {}
+
 
 def _get_conversation(sender: str) -> list[dict]:
     """Get or create conversation history for a sender. Expires after TTL."""
@@ -232,59 +236,102 @@ def _get_conversation(sender: str) -> list[dict]:
 
 
 def _trim_conversation(sender: str):
-    """Keep conversation history within limits."""
+    """Keep conversation history within limits without breaking tool call pairs."""
     convo = _conversations.get(sender)
     if not convo:
         return
-    # Each exchange is roughly 2 messages (user + assistant), but tool calls add more.
-    # Trim from the front to keep recent context.
-    while len(convo["messages"]) > MAX_HISTORY:
-        convo["messages"].pop(0)
+    msgs = convo["messages"]
+    # Trim from the front, but never leave an orphaned tool_result without
+    # its matching tool_use in the previous assistant message.
+    while len(msgs) > MAX_HISTORY:
+        msgs.pop(0)
+    # After trimming, ensure the first message isn't a tool_result (role=user
+    # with tool_result content).  If it is, keep popping until we reach a clean
+    # user text message.
+    while msgs and _is_tool_result_message(msgs[0]):
+        msgs.pop(0)
+    # Also ensure we don't start with an assistant message (Claude API requires
+    # conversations to start with a user message).
+    while msgs and msgs[0].get("role") == "assistant":
+        msgs.pop(0)
     convo["last_active"] = time.time()
+
+
+def _is_tool_result_message(msg: dict) -> bool:
+    """Check if a message is a user message containing tool_result blocks."""
+    if msg.get("role") != "user":
+        return False
+    content = msg.get("content")
+    if isinstance(content, list):
+        return any(
+            isinstance(block, dict) and block.get("type") == "tool_result"
+            for block in content
+        )
+    return False
 
 
 async def handle_message(user_message: str, sender: str = "default") -> str:
     """Process a WhatsApp message through Claude and return the response."""
+    # Serialize messages per sender so concurrent webhooks don't corrupt history
+    if sender not in _sender_locks:
+        _sender_locks[sender] = asyncio.Lock()
+    async with _sender_locks[sender]:
+        return await _handle_message_inner(user_message, sender)
+
+
+async def _handle_message_inner(user_message: str, sender: str) -> str:
+    """Inner handler — runs under per-sender lock."""
     client = anthropic.AsyncAnthropic(api_key=os.getenv("ANTHROPIC_API_KEY", "").strip())
 
     messages = _get_conversation(sender)
+
+    # Snapshot message count so we can rollback on failure
+    snapshot_len = len(messages)
+
     messages.append({"role": "user", "content": user_message})
 
-    # Agentic loop: keep going until Claude produces a final text response
-    while True:
-        response = await client.messages.create(
-            model=MODEL,
-            max_tokens=1024,
-            system=SYSTEM_PROMPT,
-            tools=TOOLS,
-            messages=messages,
-        )
+    try:
+        # Agentic loop: keep going until Claude produces a final text response
+        while True:
+            response = await client.messages.create(
+                model=MODEL,
+                max_tokens=1024,
+                system=SYSTEM_PROMPT,
+                tools=TOOLS,
+                messages=messages,
+            )
 
-        # If Claude wants to use tools, execute them and continue the loop
-        if response.stop_reason == "tool_use":
-            messages.append({"role": "assistant", "content": response.content})
+            # If Claude wants to use tools, execute them and continue the loop
+            if response.stop_reason == "tool_use":
+                messages.append({"role": "assistant", "content": response.content})
 
-            tool_results = []
-            for block in response.content:
-                if block.type == "tool_use":
-                    result = await _execute_tool(block.name, block.input, sender)
-                    tool_results.append({
-                        "type": "tool_result",
-                        "tool_use_id": block.id,
-                        "content": json.dumps(result, ensure_ascii=False),
-                    })
+                tool_results = []
+                for block in response.content:
+                    if block.type == "tool_use":
+                        result = await _execute_tool(block.name, block.input, sender)
+                        tool_results.append({
+                            "type": "tool_result",
+                            "tool_use_id": block.id,
+                            "content": json.dumps(result, ensure_ascii=False),
+                        })
 
-            messages.append({"role": "user", "content": tool_results})
-            continue
+                messages.append({"role": "user", "content": tool_results})
+                continue
 
-        # Extract final text response and save to history
-        text_parts = [block.text for block in response.content if block.type == "text"]
-        reply = "\n".join(text_parts) if text_parts else "Sorry, I couldn't process that."
+            # Extract final text response and save to history
+            text_parts = [block.text for block in response.content if block.type == "text"]
+            reply = "\n".join(text_parts) if text_parts else "Sorry, I couldn't process that."
 
-        messages.append({"role": "assistant", "content": reply})
-        _trim_conversation(sender)
+            messages.append({"role": "assistant", "content": reply})
+            _trim_conversation(sender)
 
-        return reply
+            return reply
+
+    except Exception:
+        # Rollback conversation to pre-request state so a failed tool loop
+        # doesn't leave orphaned tool_use/tool_result messages in history.
+        del messages[snapshot_len:]
+        raise
 
 
 async def _execute_tool(name: str, inputs: dict, sender: str = "default") -> dict:

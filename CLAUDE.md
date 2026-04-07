@@ -41,19 +41,20 @@ WhatsApp Message
 ## Notion Databases
 
 ### FF Inventory (`NOTION_DATABASE_ID`)
-- **Database ID:** `efea8a8d-02b2-4148-93f8-ddc7e5046ba9`
+- **Database ID:** `be5c97b4-7340-4310-ab87-7f8fad4f2856`
 - **Properties:**
   - `Product Name` (title) — e.g. "WHITE OAK (WOK) DY 2008"
   - `FF Item Code` (rich_text) — unique code like FF-SPCFWG-CL04
   - `Category` (select) — "SPC Flooring", "WPC Wall Panels", "Outdoor Decking", etc.
+  - `Color/Attribute` (rich_text)
   - `Stock` (number) — current stock count
   - `Stock (Boxes)` (number) — stock in boxes
-  - `Unit Price (₱)` (number) — selling price in Philippine Pesos
+  - `Unit Price` (number) — selling price in Philippine Pesos
   - `Min Sellable (Floor)` (number) — minimum price floor
   - `SRP @ 1.5x + VAT (₱)` (number) — suggested retail price
 
 ### Daily Sales Ledger (`NOTION_SALES_DB_ID`)
-- **Database ID:** `bb0c3244-6578-46ad-9ccc-6a582f099d19`
+- **Database ID:** `5330a1dc-4524-43c4-867f-58a64a21da61`
 - **Properties:**
   - `Sale Entry` (title) — auto-generated: "[Customer] - [Product] - [Date]"
   - `Date` (date) — sale date (ISO 8601)
@@ -143,7 +144,7 @@ VALIDATE_TWILIO_SIGNATURE — "true" or "false" (false for sandbox/dev)
 3. **`.strip()` on API keys** — Railway env vars can have trailing `\n` which causes `Illegal header value` errors.
 4. **`load_dotenv(override=True)`** — Needed because system may have empty `ANTHROPIC_API_KEY` env var that blocks dotenv.
 5. **Twilio signature validation disabled** — Set `VALIDATE_TWILIO_SIGNATURE=false` for dev/sandbox. Enable for production.
-6. **Notion property names matter** — Must match exactly: "Color / Variant" (not "Variant"), "Unit Price (₱)" (not "Price").
+6. **Notion property names matter** — Must match exactly: "Color/Attribute" (not "Variant"), "Unit Price" (not "Price").
 7. **Conversation memory is in-memory** — Resets on every Railway redeploy. Fine for now, could add Redis later.
 8. **Twilio error 63112** — Meta disabled the WhatsApp Business Account. Need to resolve via Meta Business Manager before production number can send replies.
 
