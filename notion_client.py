@@ -4,6 +4,7 @@ import httpx
 NOTION_API_KEY = os.getenv("NOTION_API_KEY")
 NOTION_DATABASE_ID = os.getenv("NOTION_DATABASE_ID")
 NOTION_SALES_DB_ID = os.getenv("NOTION_SALES_DB_ID")
+FF_SALES_LOG_DB_ID = os.getenv("FF_SALES_LOG_DB_ID", "a3406a84-4be0-41d0-9593-8090cae4133c")
 NOTION_BASE_URL = "https://api.notion.com/v1"
 NOTION_HEADERS = {
     "Authorization": f"Bearer {NOTION_API_KEY}",
@@ -155,6 +156,91 @@ async def log_sale(
     return True
 
 
+async def get_unprocessed_sales() -> list[dict]:
+    """Fetch all sales from the FF Sales Log that haven't been processed yet."""
+    url = f"{NOTION_BASE_URL}/databases/{FF_SALES_LOG_DB_ID}/query"
+    payload = {
+        "filter": {
+            "property": "Processed",
+            "checkbox": {"equals": False},
+        }
+    }
+    async with httpx.AsyncClient() as client:
+        resp = await client.post(url, headers=NOTION_HEADERS, json=payload)
+        resp.raise_for_status()
+        data = resp.json()
+
+    sales = []
+    for page in data.get("results", []):
+        props = page["properties"]
+        sales.append({
+            "id": page["id"],
+            "buyer": _get_rich_text(props, "Buyer Name"),
+            "category": _get_select(props, "Category"),
+            "color": _get_rich_text(props, "Color/Variant"),
+            "date": _get_date(props, "Date"),
+            "quantity": _get_number(props, "Quantity"),
+            "price_per_unit": _get_number(props, "Price per Unit"),
+            "installation_fee": _get_number(props, "Installation Fee"),
+            "salesperson": _get_select(props, "Salesperson"),
+            "payment_method": _get_select(props, "Payment Method"),
+            "payment_status": _get_select(props, "Payment Status"),
+            "invoice": _get_rich_text(props, "Invoice #"),
+            "unit": _get_select(props, "Unit"),
+        })
+    return sales
+
+
+async def find_inventory_product(category: str, color: str) -> dict | None:
+    """Find the best matching inventory product by category and color word overlap."""
+    url = f"{NOTION_BASE_URL}/databases/{NOTION_DATABASE_ID}/query"
+    payload = {
+        "filter": {
+            "property": "Category",
+            "select": {"equals": category},
+        }
+    }
+    async with httpx.AsyncClient() as client:
+        resp = await client.post(url, headers=NOTION_HEADERS, json=payload)
+        resp.raise_for_status()
+        data = resp.json()
+
+    target_words = set(color.lower().replace("(", "").replace(")", "").split())
+    best_match = None
+    best_score = 0
+
+    for page in data.get("results", []):
+        props = page["properties"]
+        product_color = _get_rich_text(props, "Color / Variant")
+        product_words = set(product_color.lower().replace("(", "").replace(")", "").split())
+        score = len(target_words & product_words)
+        if score > best_score:
+            best_score = score
+            best_match = {
+                "id": page["id"],
+                "name": _get_title(props, "Product Name"),
+                "color": product_color,
+                "stock": _get_number(props, "Stock"),
+                "category": _get_select(props, "Category"),
+            }
+
+    return best_match if best_score > 0 else None
+
+
+async def mark_sale_processed(page_id: str) -> bool:
+    """Mark a sale in the FF Sales Log as processed."""
+    url = f"{NOTION_BASE_URL}/pages/{page_id}"
+    payload = {
+        "properties": {
+            "Processed": {"checkbox": True},
+        }
+    }
+    async with httpx.AsyncClient() as client:
+        resp = await client.patch(url, headers=NOTION_HEADERS, json=payload)
+        resp.raise_for_status()
+    return True
+
+
 # --- Notion property helpers ---
 
 def _get_title(props: dict, key: str) -> str:
@@ -181,5 +267,12 @@ def _get_number(props: dict, key: str) -> float | None:
 def _get_select(props: dict, key: str) -> str:
     try:
         return props[key]["select"]["name"]
+    except (KeyError, TypeError):
+        return ""
+
+
+def _get_date(props: dict, key: str) -> str:
+    try:
+        return props[key]["date"]["start"]
     except (KeyError, TypeError):
         return ""
