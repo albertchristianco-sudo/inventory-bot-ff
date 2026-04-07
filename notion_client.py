@@ -211,7 +211,7 @@ async def find_inventory_product(category: str, color: str) -> dict | None:
 
     for page in data.get("results", []):
         props = page["properties"]
-        product_color = _get_rich_text(props, "Color / Variant")
+        product_color = _get_rich_text(props, "Color/Attribute")
         product_words = set(product_color.lower().replace("(", "").replace(")", "").split())
         score = len(target_words & product_words)
         if score > best_score:
