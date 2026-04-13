@@ -29,7 +29,7 @@ Telegram Message
 + APScheduler fires _run_daily_report() at 18:00 Mon-Sat (Asia/Manila),
   which pulls unprocessed sales from FF Sales Log, matches them against
   inventory, deducts stock, and posts a summary to TELEGRAM_CHAT_ID.
-  Mismatches trigger a clarification alert to TELEGRAM_OWNER_CHAT_ID.
+  Mismatches trigger a clarification alert to TELEGRAM_CHAT_ID.
 ```
 
 ## Key Files
@@ -105,10 +105,18 @@ Telegram Message
 - Short Telegram-friendly replies (under 5 lines when possible)
 - 30-minute conversation memory per Telegram user_id (in-memory, resets on redeploy)
 
-## Authorized Users
-Numeric Telegram user IDs in `ALLOWED_TELEGRAM_IDS` env var (comma-separated).
-Each staff member messages **@userinfobot** on Telegram to get their numeric user ID.
-The bot refuses unknown senders and replies with their ID so the admin can add them.
+## Access Model
+**Owner-only bot.** Only the business owner interacts with the bot on Telegram
+(to check stock, update prices, and see the 6PM daily report). Staff do **not**
+have bot access — they update sales directly in the **FF Sales Log** Notion
+database, and the 6PM scheduler processes their entries: deducting inventory,
+posting a summary to Telegram, and flagging any category/color mismatches for
+manual review.
+
+The allowed sender is set by `OWNER_TELEGRAM_ID`, which defaults to
+`TELEGRAM_CHAT_ID` (correct when that chat is the owner's private DM with the
+bot). Any message from a non-owner sender is rejected with a short "this bot is
+private" reply.
 
 ## Telegram Setup
 
@@ -132,10 +140,9 @@ curl https://web-production-492dc.up.railway.app/telegram-webhook-info
 ```
 
 ### How replies work
-The bot replies to whatever chat the message came from — so private DMs
-stay private, group chats reply in-place. The daily 6PM report goes
-specifically to `TELEGRAM_CHAT_ID`. Mismatch clarification alerts go to
-`TELEGRAM_OWNER_CHAT_ID` (falls back to `TELEGRAM_CHAT_ID` if unset).
+The bot replies to whatever chat the owner's message came from — which is the
+owner's private DM with the bot. The daily 6PM report and any inventory
+mismatch clarification alerts are sent to `TELEGRAM_CHAT_ID` (same chat).
 
 ## Deployment
 - **Railway URL:** `https://web-production-492dc.up.railway.app`
@@ -164,9 +171,8 @@ FF_SALES_LOG_DB_ID        — Raw FF Sales Log database ID (has sensible default
 ANTHROPIC_API_KEY         — Anthropic API key (starts with sk-ant-...)
 TELEGRAM_BOT_TOKEN        — Telegram bot token from @BotFather
 TELEGRAM_CHAT_ID          — Chat ID for the 6PM daily report
-TELEGRAM_OWNER_CHAT_ID    — Chat ID for mismatch alerts (optional; defaults to TELEGRAM_CHAT_ID)
+OWNER_TELEGRAM_ID         — Owner's numeric user ID (only allowed sender; defaults to TELEGRAM_CHAT_ID)
 TELEGRAM_WEBHOOK_SECRET   — Optional shared secret to reject forged webhook calls
-ALLOWED_TELEGRAM_IDS      — Comma-separated numeric user IDs allowed to chat with the bot
 ```
 
 ## Key Technical Decisions & Gotchas
@@ -178,7 +184,7 @@ ALLOWED_TELEGRAM_IDS      — Comma-separated numeric user IDs allowed to chat w
 6. **FastAPI lifespan, not on_event** — `@app.on_event("startup")` is deprecated and can be flaky in production. Use the `asynccontextmanager` lifespan passed to `FastAPI(lifespan=lifespan)`.
 7. **Scheduler callback must be `async def`** — AsyncIOScheduler runs coroutines natively. The old `asyncio.ensure_future()` wrapper silently swallowed errors; the current `async def` callback wraps the body in try/except so failures show up in Railway logs.
 8. **Telegram dedup via update_id** — Telegram retries webhook delivery if it doesn't get a 200 back quickly. We remember the last 200 update_ids for 60s and ignore duplicates.
-9. **Webhook authorization** — Two layers: (a) optional `X-Telegram-Bot-Api-Secret-Token` header check, (b) numeric user_id allowlist. Unknown senders get a "not authorized" reply that includes their ID for easy admin onboarding.
+9. **Webhook authorization** — Two layers: (a) optional `X-Telegram-Bot-Api-Secret-Token` header check, (b) single-owner check — only `OWNER_TELEGRAM_ID` (defaults to `TELEGRAM_CHAT_ID`) may interact. Other senders get a short "this bot is private" reply.
 10. **Scheduler catch-up** — If Railway redeploys exactly at 6PM, the scheduler misses that fire window. APScheduler does not catch up missed runs — hit `POST /run-daily-report` manually if this happens.
 
 ## Pending / TODO

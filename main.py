@@ -25,12 +25,12 @@ _DEDUP_MAX = 200  # max entries to keep
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")  # daily report destination
-TELEGRAM_OWNER_CHAT_ID = os.getenv("TELEGRAM_OWNER_CHAT_ID") or TELEGRAM_CHAT_ID
 TELEGRAM_WEBHOOK_SECRET = os.getenv("TELEGRAM_WEBHOOK_SECRET", "")
 
-# Authorized staff — comma-separated numeric Telegram user IDs in .env
-_allowed_raw = os.getenv("ALLOWED_TELEGRAM_IDS", "")
-ALLOWED_TELEGRAM_IDS = {s.strip() for s in _allowed_raw.split(",") if s.strip()}
+# Owner-only bot: only the owner can chat with the bot. Staff update Notion
+# directly (FF Sales Log) and the 6PM cron processes their entries.
+# Defaults to TELEGRAM_CHAT_ID — for a private DM, chat_id == user_id.
+OWNER_TELEGRAM_ID = (os.getenv("OWNER_TELEGRAM_ID") or TELEGRAM_CHAT_ID or "").strip()
 
 
 # --- Scheduled daily report (6PM Mon-Sat, Philippine time UTC+8) ---
@@ -112,12 +112,12 @@ async def _send_telegram(text: str) -> bool:
 
 
 async def _send_telegram_alert(text: str) -> bool:
-    """Send a clarification alert to the owner's Telegram chat."""
-    target = TELEGRAM_OWNER_CHAT_ID
-    if not target:
-        logger.warning("Owner Telegram chat not configured — skipping alert")
+    """Send a clarification alert — goes to the same chat as the daily report
+    (owner's DM), since this is an owner-only bot."""
+    if not TELEGRAM_CHAT_ID:
+        logger.warning("TELEGRAM_CHAT_ID not set — skipping alert")
         return False
-    return await _send_telegram_to(target, text)
+    return await _send_telegram_to(TELEGRAM_CHAT_ID, text)
 
 
 # --- Telegram webhook ---
@@ -167,14 +167,16 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
 
     sender_id = str(user_id)
 
-    # Authorization — refuse unknown senders
-    if ALLOWED_TELEGRAM_IDS and sender_id not in ALLOWED_TELEGRAM_IDS:
+    # Authorization — owner-only bot. Staff update Notion directly.
+    if not OWNER_TELEGRAM_ID:
+        logger.error("OWNER_TELEGRAM_ID not configured — refusing all messages")
+        return {"ok": True}
+    if sender_id != str(OWNER_TELEGRAM_ID):
         username = from_user.get("username") or from_user.get("first_name") or "?"
         logger.warning(f"Unauthorized Telegram user_id={sender_id} username={username}")
         await _send_telegram_to(
             chat_id,
-            "⚠️ You're not authorized to use this bot. "
-            f"Ask the admin to add your Telegram user ID: {sender_id}"
+            "⚠️ This bot is private. If you need inventory info, contact the owner.",
         )
         return {"ok": True}
 
