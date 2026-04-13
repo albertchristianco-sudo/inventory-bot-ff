@@ -9,14 +9,14 @@ MODEL = "claude-sonnet-4-6"
 CONVERSATION_TTL = 30 * 60  # 30 minutes — conversations expire after this
 MAX_HISTORY = 20  # max message pairs to keep per conversation
 
-SYSTEM_PROMPT = """You are the Flame & Finish sales assistant bot. You help staff log daily sales transactions and check inventory through WhatsApp.
+SYSTEM_PROMPT = """You are the Flame & Finish sales assistant bot. You help staff log daily sales transactions and check inventory through Telegram.
 
 ## YOUR ROLE
 - Log sales into the Daily Sales Ledger (Notion)
 - Check product stock levels from FF Inventory (Notion)
 - Update prices when the owner tells you to
 - Confirm entries back to the staff member
-- Keep responses SHORT and conversational — this is WhatsApp, not email
+- Keep responses SHORT and conversational — this is Telegram, not email
 
 ## RULES
 1. NEVER guess stock numbers. Always use lookup_products first.
@@ -297,7 +297,7 @@ def _is_tool_result_message(msg: dict) -> bool:
 
 
 async def handle_message(user_message: str, sender: str = "default") -> str:
-    """Process a WhatsApp message through Claude and return the response."""
+    """Process a Telegram message through Claude and return the response."""
     # Serialize messages per sender so concurrent webhooks don't corrupt history
     if sender not in _sender_locks:
         _sender_locks[sender] = asyncio.Lock()

@@ -102,7 +102,7 @@ Telegram Message
   (e.g. "SPC" → SPC Flooring, "reducer" → Interior Finishes, "bamboo" → search "bamboo")
 - Sale processing: (1) lookup product → (2) update stock → (3) log sale
 - Confirms old stock, deduction, and new stock on every sale
-- Short WhatsApp/Telegram-friendly replies (under 5 lines when possible)
+- Short Telegram-friendly replies (under 5 lines when possible)
 - 30-minute conversation memory per Telegram user_id (in-memory, resets on redeploy)
 
 ## Authorized Users
