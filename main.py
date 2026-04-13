@@ -23,9 +23,11 @@ _seen_update_ids: OrderedDict[int, float] = OrderedDict()
 _DEDUP_TTL = 60  # seconds to remember an update_id
 _DEDUP_MAX = 200  # max entries to keep
 
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")  # daily report destination
-TELEGRAM_WEBHOOK_SECRET = os.getenv("TELEGRAM_WEBHOOK_SECRET", "")
+# Railway env vars can have trailing whitespace/newlines — strip everything
+# we inject into HTTP headers or URLs.
+TELEGRAM_BOT_TOKEN = (os.getenv("TELEGRAM_BOT_TOKEN") or "").strip()
+TELEGRAM_CHAT_ID = (os.getenv("TELEGRAM_CHAT_ID") or "").strip()  # daily report destination
+TELEGRAM_WEBHOOK_SECRET = (os.getenv("TELEGRAM_WEBHOOK_SECRET") or "").strip()
 
 # Owner-only bot: only the owner can chat with the bot. Staff update Notion
 # directly (FF Sales Log) and the 6PM cron processes their entries.
