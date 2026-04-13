@@ -23,8 +23,6 @@ _seen_message_sids: OrderedDict[str, float] = OrderedDict()
 _DEDUP_TTL = 60  # seconds to remember a MessageSid
 _DEDUP_MAX = 200  # max entries to keep
 
-app = FastAPI(title="Flame & Finish Inventory Bot")
-
 TWILIO_WHATSAPP_NUMBER = os.getenv("TWILIO_WHATSAPP_NUMBER")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
@@ -54,16 +52,22 @@ def _validate_twilio_signature(url: str, params: dict, signature: str) -> bool:
 
 
 # --- Scheduled daily report (6PM Mon-Sat, Philippine time UTC+8) ---
+from contextlib import asynccontextmanager
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
-import asyncio
 
 scheduler = AsyncIOScheduler()
 
 
-def _scheduled_daily_report():
-    """Wrapper to run the async daily report from the sync scheduler callback."""
-    asyncio.ensure_future(_run_daily_report())
+async def _scheduled_daily_report():
+    """Scheduler callback — runs the daily report and logs the outcome.
+    AsyncIOScheduler runs coroutines natively on the event loop."""
+    try:
+        logger.info("Scheduler fired — running daily report")
+        result = await _run_daily_report()
+        logger.info(f"Scheduled daily report done: {result}")
+    except Exception as e:
+        logger.error(f"Scheduled daily report failed: {e}", exc_info=True)
 
 
 scheduler.add_job(
@@ -75,15 +79,18 @@ scheduler.add_job(
 )
 
 
-@app.on_event("startup")
-async def startup_event():
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
     scheduler.start()
-    logger.info("APScheduler started — daily report scheduled at 6PM Mon-Sat (Asia/Manila)")
-
-
-@app.on_event("shutdown")
-async def shutdown_event():
+    job = scheduler.get_job("daily_report")
+    next_run = job.next_run_time if job else None
+    logger.info(f"APScheduler started — next daily report at {next_run}")
+    yield
     scheduler.shutdown()
+    logger.info("APScheduler shut down")
+
+
+app = FastAPI(title="Flame & Finish Inventory Bot", lifespan=lifespan)
 
 
 @app.get("/")
@@ -275,6 +282,51 @@ async def _run_daily_report() -> dict:
 async def daily_report_endpoint():
     result = await _run_daily_report()
     return result
+
+
+@app.get("/scheduler-status")
+async def scheduler_status():
+    """Diagnostic — confirms scheduler is alive and shows the next fire time."""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    jobs = []
+    for job in scheduler.get_jobs():
+        jobs.append({
+            "id": job.id,
+            "name": job.name,
+            "next_run_time": str(job.next_run_time) if job.next_run_time else None,
+            "trigger": str(job.trigger),
+        })
+    return {
+        "scheduler_running": scheduler.running,
+        "server_time_utc": datetime.utcnow().isoformat(),
+        "server_time_manila": datetime.now(ZoneInfo("Asia/Manila")).isoformat(),
+        "jobs": jobs,
+    }
+
+
+@app.post("/test-telegram")
+async def test_telegram():
+    """Diagnostic — sends a test message via Telegram and returns the raw API response."""
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        return {
+            "configured": False,
+            "error": "TELEGRAM_BOT_TOKEN and/or TELEGRAM_CHAT_ID not set",
+            "bot_token_set": bool(TELEGRAM_BOT_TOKEN),
+            "chat_id_set": bool(TELEGRAM_CHAT_ID),
+        }
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": "🧪 Test from Flame & Finish bot — if you see this, Telegram delivery works."}
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(url, json=payload)
+        return {
+            "configured": True,
+            "http_status": resp.status_code,
+            "response": resp.json(),
+        }
+    except Exception as e:
+        return {"configured": True, "error": str(e)}
 
 
 if __name__ == "__main__":
