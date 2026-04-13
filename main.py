@@ -3,13 +3,14 @@ import time
 import logging
 import httpx
 from collections import OrderedDict
+from contextlib import asynccontextmanager
 from dotenv import load_dotenv
 
 load_dotenv(override=True)
 
 from fastapi import BackgroundTasks, FastAPI, Request, Response
-from twilio.rest import Client as TwilioClient
-from twilio.request_validator import RequestValidator
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.cron import CronTrigger
 
 import agent
 import notion_client as notion
@@ -17,45 +18,22 @@ import notion_client as notion
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Deduplication: track recently processed Twilio MessageSids to ignore retries.
-# Twilio can send the same webhook multiple times if it doesn't get a fast response.
-_seen_message_sids: OrderedDict[str, float] = OrderedDict()
-_DEDUP_TTL = 60  # seconds to remember a MessageSid
+# Deduplication: track recently processed Telegram update_ids to ignore retries.
+_seen_update_ids: OrderedDict[int, float] = OrderedDict()
+_DEDUP_TTL = 60  # seconds to remember an update_id
 _DEDUP_MAX = 200  # max entries to keep
 
-TWILIO_WHATSAPP_NUMBER = os.getenv("TWILIO_WHATSAPP_NUMBER")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-OWNER_WHATSAPP_NUMBER = os.getenv("OWNER_WHATSAPP_NUMBER")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")  # daily report destination
+TELEGRAM_OWNER_CHAT_ID = os.getenv("TELEGRAM_OWNER_CHAT_ID") or TELEGRAM_CHAT_ID
+TELEGRAM_WEBHOOK_SECRET = os.getenv("TELEGRAM_WEBHOOK_SECRET", "")
 
-# Authorized team numbers — comma-separated in .env
-_allowed_raw = os.getenv("ALLOWED_NUMBERS", "")
-ALLOWED_NUMBERS = {n.strip() for n in _allowed_raw.split(",") if n.strip()}
-
-
-def _get_twilio_client() -> TwilioClient:
-    """Lazy-init Twilio client so the server can start without credentials."""
-    sid = os.getenv("TWILIO_ACCOUNT_SID")
-    token = os.getenv("TWILIO_AUTH_TOKEN")
-    if not sid or not token:
-        raise RuntimeError("TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN must be set")
-    return TwilioClient(sid, token)
-
-
-def _validate_twilio_signature(url: str, params: dict, signature: str) -> bool:
-    """Validate that the request actually came from Twilio."""
-    token = os.getenv("TWILIO_AUTH_TOKEN")
-    if not token:
-        return False
-    validator = RequestValidator(token)
-    return validator.validate(url, params, signature)
+# Authorized staff — comma-separated numeric Telegram user IDs in .env
+_allowed_raw = os.getenv("ALLOWED_TELEGRAM_IDS", "")
+ALLOWED_TELEGRAM_IDS = {s.strip() for s in _allowed_raw.split(",") if s.strip()}
 
 
 # --- Scheduled daily report (6PM Mon-Sat, Philippine time UTC+8) ---
-from contextlib import asynccontextmanager
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from apscheduler.triggers.cron import CronTrigger
-
 scheduler = AsyncIOScheduler()
 
 
@@ -95,106 +73,161 @@ app = FastAPI(title="Flame & Finish Inventory Bot", lifespan=lifespan)
 
 @app.get("/")
 async def health():
-    return {"status": "ok", "service": "Flame & Finish Inventory Bot"}
+    return {"status": "ok", "service": "Flame & Finish Inventory Bot (Telegram)"}
 
 
-EMPTY_TWIML = '<?xml version="1.0" encoding="UTF-8"?><Response></Response>'
+# --- Telegram helpers ---
+
+async def _tg_call(method: str, payload: dict) -> dict:
+    """Call the Telegram Bot API and return the parsed JSON response."""
+    if not TELEGRAM_BOT_TOKEN:
+        return {"ok": False, "error": "TELEGRAM_BOT_TOKEN not set"}
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/{method}"
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.post(url, json=payload)
+        try:
+            data = resp.json()
+        except Exception:
+            data = {"ok": False, "http_status": resp.status_code, "error": f"non-JSON: {resp.text[:300]}"}
+    except Exception as e:
+        data = {"ok": False, "error": str(e)}
+    if not data.get("ok"):
+        logger.error(f"Telegram {method} failed: {data}")
+    return data
 
 
-@app.post("/webhook")
-async def whatsapp_webhook(request: Request, background_tasks: BackgroundTasks):
-    """Receive incoming WhatsApp messages from Twilio."""
-    form_data = await request.form()
-    params = dict(form_data)
+async def _send_telegram_to(chat_id, text: str) -> bool:
+    """Send a message to a specific Telegram chat."""
+    data = await _tg_call("sendMessage", {"chat_id": chat_id, "text": text})
+    return data.get("ok", False)
 
-    From = params.get("From", "")
-    Body = params.get("Body", "")
-    message_sid = params.get("MessageSid", "")
 
-    # Deduplicate: Twilio may retry the webhook if our response is slow.
-    # Ignore messages we've already seen.
-    if message_sid:
-        now = time.time()
-        if message_sid in _seen_message_sids:
-            logger.info(f"Duplicate webhook ignored: MessageSid={message_sid}")
-            return Response(content=EMPTY_TWIML, media_type="text/xml")
-        _seen_message_sids[message_sid] = now
-        # Evict old entries
-        while _seen_message_sids and (
-            len(_seen_message_sids) > _DEDUP_MAX
-            or next(iter(_seen_message_sids.values())) < now - _DEDUP_TTL
-        ):
-            _seen_message_sids.popitem(last=False)
+async def _send_telegram(text: str) -> bool:
+    """Send to the default daily-report chat (TELEGRAM_CHAT_ID)."""
+    if not TELEGRAM_CHAT_ID:
+        logger.warning("TELEGRAM_CHAT_ID not set — cannot send daily report")
+        return False
+    return await _send_telegram_to(TELEGRAM_CHAT_ID, text)
 
-    # Validate Twilio signature (skip in dev — ngrok changes the URL which breaks validation)
-    if os.getenv("VALIDATE_TWILIO_SIGNATURE", "false").lower() == "true":
-        signature = request.headers.get("X-Twilio-Signature", "")
-        url = str(request.url)
-        if not _validate_twilio_signature(url, params, signature):
-            logger.warning(f"Invalid Twilio signature from {From}")
+
+async def _send_telegram_alert(text: str) -> bool:
+    """Send a clarification alert to the owner's Telegram chat."""
+    target = TELEGRAM_OWNER_CHAT_ID
+    if not target:
+        logger.warning("Owner Telegram chat not configured — skipping alert")
+        return False
+    return await _send_telegram_to(target, text)
+
+
+# --- Telegram webhook ---
+
+@app.post("/telegram-webhook")
+async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
+    """Receive incoming Telegram messages."""
+    # Validate secret token if configured (recommended for production)
+    if TELEGRAM_WEBHOOK_SECRET:
+        token = request.headers.get("X-Telegram-Bot-Api-Secret-Token", "")
+        if token != TELEGRAM_WEBHOOK_SECRET:
+            logger.warning("Invalid Telegram webhook secret")
             return Response(status_code=403)
 
-    # Restrict to allowed team numbers
-    if ALLOWED_NUMBERS and From not in ALLOWED_NUMBERS:
-        logger.warning(f"Unauthorized number: {From}")
-        return Response(status_code=403)
+    try:
+        update = await request.json()
+    except Exception:
+        logger.warning("Telegram webhook: non-JSON body")
+        return {"ok": True}
 
-    # Process in background so Twilio doesn't time out (15s limit)
-    # Return empty TwiML immediately, then send reply via REST API when ready
-    background_tasks.add_task(_process_and_reply, Body, From)
+    # Deduplicate by update_id — Telegram retries if it doesn't get a 200 back fast
+    update_id = update.get("update_id")
+    if isinstance(update_id, int):
+        now = time.time()
+        if update_id in _seen_update_ids:
+            logger.info(f"Duplicate Telegram update ignored: update_id={update_id}")
+            return {"ok": True}
+        _seen_update_ids[update_id] = now
+        while _seen_update_ids and (
+            len(_seen_update_ids) > _DEDUP_MAX
+            or next(iter(_seen_update_ids.values())) < now - _DEDUP_TTL
+        ):
+            _seen_update_ids.popitem(last=False)
 
-    return Response(content=EMPTY_TWIML, media_type="text/xml")
+    message = update.get("message") or update.get("edited_message")
+    if not message:
+        return {"ok": True}  # ignore non-message updates (e.g. reactions, joins)
+
+    chat = message.get("chat") or {}
+    from_user = message.get("from") or {}
+    chat_id = chat.get("id")
+    user_id = from_user.get("id")
+    text = (message.get("text") or "").strip()
+
+    if not text or chat_id is None or user_id is None:
+        return {"ok": True}
+
+    sender_id = str(user_id)
+
+    # Authorization — refuse unknown senders
+    if ALLOWED_TELEGRAM_IDS and sender_id not in ALLOWED_TELEGRAM_IDS:
+        username = from_user.get("username") or from_user.get("first_name") or "?"
+        logger.warning(f"Unauthorized Telegram user_id={sender_id} username={username}")
+        await _send_telegram_to(
+            chat_id,
+            "⚠️ You're not authorized to use this bot. "
+            f"Ask the admin to add your Telegram user ID: {sender_id}"
+        )
+        return {"ok": True}
+
+    # Queue background processing so Telegram gets a fast 200 back
+    background_tasks.add_task(_process_and_reply, text, f"telegram:{sender_id}", chat_id)
+    return {"ok": True}
 
 
-async def _process_and_reply(body: str, sender: str):
-    """Background task: process message through Claude and send reply via Twilio."""
+async def _process_and_reply(body: str, sender: str, chat_id):
+    """Background task: process message through Claude and reply via Telegram."""
     try:
         reply = await agent.handle_message(body, sender=sender)
     except Exception as e:
         logger.error(f"Agent error: {e}", exc_info=True)
         reply = "Sorry, something went wrong processing your message. Try again in a bit!"
 
+    await _send_telegram_to(chat_id, reply)
+
+
+# --- Telegram webhook management ---
+
+@app.post("/telegram-setup-webhook")
+async def setup_telegram_webhook(request: Request):
+    """One-shot setup: register this service's webhook with Telegram.
+
+    Example:
+      curl -X POST https://<your-url>/telegram-setup-webhook \\
+           -H 'content-type: application/json' \\
+           -d '{"url": "https://<your-url>/telegram-webhook"}'
+    """
     try:
-        msg = _get_twilio_client().messages.create(
-            body=reply,
-            from_=TWILIO_WHATSAPP_NUMBER,
-            to=sender,
-        )
-        logger.info(f"Reply sent - sid: {msg.sid}, status: {msg.status}")
-    except Exception as e:
-        logger.error(f"Twilio send error: {e}")
+        body = await request.json()
+    except Exception:
+        body = {}
+    url = body.get("url")
+    if not url:
+        return {
+            "ok": False,
+            "error": "Provide JSON body: {\"url\": \"https://<your-railway-url>/telegram-webhook\"}",
+        }
+    payload = {"url": url, "drop_pending_updates": True}
+    if TELEGRAM_WEBHOOK_SECRET:
+        payload["secret_token"] = TELEGRAM_WEBHOOK_SECRET
+    return await _tg_call("setWebhook", payload)
 
 
-async def _send_telegram(text: str) -> bool:
-    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        logger.warning("Telegram not configured")
-        return False
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    async with httpx.AsyncClient() as client:
-        resp = await client.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": text})
-    ok = resp.json().get("ok", False)
-    if not ok:
-        logger.error(f"Telegram send failed: {resp.text}")
-    return ok
+@app.get("/telegram-webhook-info")
+async def telegram_webhook_info():
+    """Diagnostic: show what Telegram thinks the registered webhook is."""
+    return await _tg_call("getWebhookInfo", {})
 
 
-async def _send_whatsapp_alert(text: str) -> bool:
-    """Send a WhatsApp message to the owner for clarification on mismatched sales."""
-    if not OWNER_WHATSAPP_NUMBER or not TWILIO_WHATSAPP_NUMBER:
-        logger.warning("Owner WhatsApp not configured — skipping alert")
-        return False
-    try:
-        msg = _get_twilio_client().messages.create(
-            body=text,
-            from_=TWILIO_WHATSAPP_NUMBER,
-            to=OWNER_WHATSAPP_NUMBER,
-        )
-        logger.info(f"WhatsApp alert sent to owner - sid: {msg.sid}")
-        return True
-    except Exception as e:
-        logger.error(f"WhatsApp alert failed: {e}")
-        return False
-
+# --- Daily report ---
 
 async def _run_daily_report() -> dict:
     from datetime import date
@@ -239,7 +272,7 @@ async def _run_daily_report() -> dict:
         else:
             alert_msg = f"⚠️ No inventory match for: {sale['category']} / {sale['color']} (check manually)"
             alerts.append(alert_msg)
-            await _send_whatsapp_alert(
+            await _send_telegram_alert(
                 f"🔍 Daily Report — Need Clarification\n\n"
                 f"I couldn't match this sale to inventory:\n"
                 f"• Category: {sale['category']}\n"
@@ -284,6 +317,8 @@ async def daily_report_endpoint():
     return result
 
 
+# --- Diagnostics ---
+
 @app.get("/scheduler-status")
 async def scheduler_status():
     """Diagnostic — confirms scheduler is alive and shows the next fire time."""
@@ -315,18 +350,11 @@ async def test_telegram():
             "bot_token_set": bool(TELEGRAM_BOT_TOKEN),
             "chat_id_set": bool(TELEGRAM_CHAT_ID),
         }
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": "🧪 Test from Flame & Finish bot — if you see this, Telegram delivery works."}
-    try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.post(url, json=payload)
-        return {
-            "configured": True,
-            "http_status": resp.status_code,
-            "response": resp.json(),
-        }
-    except Exception as e:
-        return {"configured": True, "error": str(e)}
+    data = await _tg_call("sendMessage", {
+        "chat_id": TELEGRAM_CHAT_ID,
+        "text": "🧪 Test from Flame & Finish bot — if you see this, Telegram delivery works.",
+    })
+    return {"configured": True, "response": data}
 
 
 if __name__ == "__main__":
