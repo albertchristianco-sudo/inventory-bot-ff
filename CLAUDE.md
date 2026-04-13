@@ -1,38 +1,44 @@
 # Flame & Finish Inventory Agent
 
 ## Project Overview
-WhatsApp-based inventory management bot for Flame & Finish Marketing Corp,
+Telegram-based inventory management bot for Flame & Finish Marketing Corp,
 an import business in Cebu, Philippines dealing in SPC flooring and WPC wall panels.
 The bot lets the owner and sales team check stock, record sales, and update prices
-via WhatsApp messages — powered by Claude AI with Notion as the database.
+via Telegram messages — powered by Claude AI with Notion as the database.
 
 ## Tech Stack
 - **Backend:** Python 3.10 (FastAPI + uvicorn)
-- **WhatsApp:** Twilio WhatsApp API (production number + sandbox fallback)
-- **Database:** Notion API (inventory DB + sales log DB)
+- **Messaging:** Telegram Bot API (inbound via webhook, outbound via HTTPS)
+- **Database:** Notion API (inventory DB + daily sales ledger + raw sales log)
 - **AI Brain:** Claude API (`claude-sonnet-4-6`) via `anthropic` async SDK
+- **Scheduler:** APScheduler (6PM Mon-Sat daily report, Asia/Manila tz)
 - **Hosting:** Railway (auto-deploys from GitHub on push)
 - **Repo:** github.com/albertchristianco-sudo/inventory-bot-ff
 
 ## Architecture
 ```
-WhatsApp Message
-  → Twilio (webhook POST)
-    → Railway (FastAPI at /webhook)
+Telegram Message
+  → Telegram Bot API (webhook POST)
+    → Railway (FastAPI at /telegram-webhook)
       → agent.py (Claude async API with tool-use loop)
         → notion_client.py (Notion API for inventory CRUD)
-      ← Twilio REST API sends reply via messages.create()
-    ← PlainTextResponse("OK")
-  ← WhatsApp reply appears
+      ← Telegram Bot API sendMessage (reply to same chat)
+    ← {"ok": true}
+  ← Telegram reply appears
+
++ APScheduler fires _run_daily_report() at 18:00 Mon-Sat (Asia/Manila),
+  which pulls unprocessed sales from FF Sales Log, matches them against
+  inventory, deducts stock, and posts a summary to TELEGRAM_CHAT_ID.
+  Mismatches trigger a clarification alert to TELEGRAM_OWNER_CHAT_ID.
 ```
 
 ## Key Files
 | File | Purpose |
 |---|---|
-| `main.py` | FastAPI server, Twilio webhook at `/webhook`, REST API replies, team allow-list |
-| `agent.py` | Claude async API client, agentic tool-use loop, 4 tools, conversation memory |
-| `notion_client.py` | Notion API functions: query_products, update_stock, update_price, log_sale |
-| `requirements.txt` | Unpinned deps: fastapi, uvicorn, twilio, anthropic, httpx, python-dotenv, python-multipart |
+| `main.py` | FastAPI server, Telegram webhook at `/telegram-webhook`, scheduler, daily report, diagnostics |
+| `agent.py` | Claude async API client, agentic tool-use loop, 4 tools, keyword alias map, conversation memory |
+| `notion_client.py` | Notion API functions: query_products, update_stock, update_price, log_sale, get_unprocessed_sales, find_inventory_product, mark_sale_processed |
+| `requirements.txt` | Unpinned deps: fastapi, uvicorn, anthropic, httpx, python-dotenv, python-multipart, apscheduler |
 | `railway.json` | Nixpacks builder config for Railway |
 | `Procfile` | Railway start command: `uvicorn main:app --host 0.0.0.0 --port $PORT` |
 | `.env` | Local env vars (never committed) |
@@ -73,6 +79,15 @@ WhatsApp Message
   - `Handled By` (select) — Ac, Staff 1, Staff 2, Staff 3
   - `Notes` (rich_text) — optional remarks
 
+### FF Sales Log (`FF_SALES_LOG_DB_ID`)
+- **Database ID:** `a3406a84-4be0-41d0-9593-8090cae4133c`
+- Raw sales entries that staff log throughout the day. The 6PM scheduled
+  job pulls everything where `Processed == false`, deducts inventory,
+  posts the summary to Telegram, then flips `Processed` to true.
+- **Properties used:** Buyer Name, Category, Color/Variant, Date, Quantity,
+  Price per Unit, Installation Fee, Salesperson, Payment Method, Payment
+  Status, Invoice #, Unit, Processed (checkbox).
+
 ## Agent Tools (defined in agent.py)
 1. **lookup_products** — Search inventory by keyword or get all products
 2. **update_stock** — Set new stock quantity by page ID
@@ -80,83 +95,101 @@ WhatsApp Message
 4. **log_sale** — Record a sale with full details (customer, product, quantity, unit, price, payment, transaction type, handler)
 
 ## Agent Behavior
-- Responds in **English by default**
+- Responds in **English by default**; replies in Bisaya when staff writes in Bisaya
 - **Understands** Cebuano, Tagalog, and English input
 - Never guesses stock — always calls `lookup_products` first
+- Resolves shorthand via the **Keyword Alias Map** in the system prompt
+  (e.g. "SPC" → SPC Flooring, "reducer" → Interior Finishes, "bamboo" → search "bamboo")
 - Sale processing: (1) lookup product → (2) update stock → (3) log sale
 - Confirms old stock, deduction, and new stock on every sale
-- Short WhatsApp-friendly replies
-- 30-minute conversation memory per phone number (in-memory, resets on redeploy)
+- Short WhatsApp/Telegram-friendly replies (under 5 lines when possible)
+- 30-minute conversation memory per Telegram user_id (in-memory, resets on redeploy)
 
 ## Authorized Users
-4 WhatsApp numbers in `ALLOWED_NUMBERS` env var (comma-separated with `whatsapp:` prefix).
-Each salesperson messages the bot directly from their own number.
+Numeric Telegram user IDs in `ALLOWED_TELEGRAM_IDS` env var (comma-separated).
+Each staff member messages **@userinfobot** on Telegram to get their numeric user ID.
+The bot refuses unknown senders and replies with their ID so the admin can add them.
 
-## Twilio WhatsApp Setup
+## Telegram Setup
 
-### Production Number (current)
-- **Number:** `+15557803575` (business name: "Flame and Finish")
-- **Messaging Service SID:** `MG26b64b51f8fa0cdc9c01b00ee01f9504`
-- **WhatsApp Business Account ID:** `932464726410411`
-- **Meta Business Manager ID:** `734181149085536`
-- **Status:** Webhook works, but Meta disabled the WABA (error 63112). Need to resolve with Meta Business Manager before replies will deliver.
-- **Webhook configured on:** Sender settings → "Webhook URL for incoming messages"
-- **Reply method:** Twilio REST API `messages.create()` with `from_=whatsapp:+15557803575`
+### Bot creation
+1. Message **@BotFather** on Telegram → `/newbot` → follow prompts
+2. Copy the bot token → set as `TELEGRAM_BOT_TOKEN` on Railway
+3. Start a chat with your new bot and send any message so Telegram opens the DM
+4. Get your chat ID from @userinfobot or by calling `getUpdates` → set as `TELEGRAM_CHAT_ID`
 
-### Sandbox Fallback
-- **Number:** `+14155238886` (Twilio sandbox)
-- **Webhook configured on:** Twilio Console → Messaging → WhatsApp Sandbox → "When a message comes in"
-- **Reply method:** Same REST API approach works. TwiML also works with sandbox.
-- **To use sandbox:** Change `TWILIO_WHATSAPP_NUMBER` on Railway to `whatsapp:+14155238886` and configure sandbox webhook URL.
-
-### Switching Between Production and Sandbox
-Only need to change on Railway:
+### Webhook registration (one-time)
 ```
-TWILIO_WHATSAPP_NUMBER=whatsapp:+15557803575   # production
-TWILIO_WHATSAPP_NUMBER=whatsapp:+14155238886   # sandbox
+curl -X POST https://web-production-492dc.up.railway.app/telegram-setup-webhook \
+  -H 'content-type: application/json' \
+  -d '{"url": "https://web-production-492dc.up.railway.app/telegram-webhook"}'
 ```
-And ensure the webhook URL `https://web-production-492dc.up.railway.app/webhook` is configured on the active sender.
+Expect: `{"ok": true, "result": true, "description": "Webhook was set"}`
+
+### Verify webhook
+```
+curl https://web-production-492dc.up.railway.app/telegram-webhook-info
+```
+
+### How replies work
+The bot replies to whatever chat the message came from — so private DMs
+stay private, group chats reply in-place. The daily 6PM report goes
+specifically to `TELEGRAM_CHAT_ID`. Mismatch clarification alerts go to
+`TELEGRAM_OWNER_CHAT_ID` (falls back to `TELEGRAM_CHAT_ID` if unset).
 
 ## Deployment
 - **Railway URL:** `https://web-production-492dc.up.railway.app`
-- **Webhook:** `https://web-production-492dc.up.railway.app/webhook`
+- **Telegram webhook:** `https://web-production-492dc.up.railway.app/telegram-webhook`
 - **Auto-deploy:** Push to `main` branch on GitHub triggers Railway rebuild
-- **Env vars on Railway:** All keys from `.env` plus `VALIDATE_TWILIO_SIGNATURE=false`
-- **Important:** Railway env vars may have trailing newlines — code uses `.strip()` on API keys
 - **Deploy time:** ~60-90 seconds after git push
+- **Important:** Railway env vars may have trailing newlines — code uses `.strip()` on API keys
+
+## Endpoints
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/` | Health check |
+| POST | `/telegram-webhook` | Telegram pushes incoming messages here |
+| POST | `/telegram-setup-webhook` | One-shot: register the webhook URL with Telegram |
+| GET | `/telegram-webhook-info` | Diagnostic: show Telegram's view of the registered webhook |
+| POST | `/run-daily-report` | Manually trigger the daily sales report (same work as 6PM cron) |
+| GET | `/scheduler-status` | Diagnostic: confirm scheduler is armed, show next fire time |
+| POST | `/test-telegram` | Diagnostic: send a test message and return the raw Telegram API response |
 
 ## Environment Variables
 ```
-TWILIO_ACCOUNT_SID        — Twilio account SID (starts with AC...)
-TWILIO_AUTH_TOKEN          — Twilio auth token
-TWILIO_WHATSAPP_NUMBER    — whatsapp:+15557803575 (production) or whatsapp:+14155238886 (sandbox)
 NOTION_API_KEY            — Notion integration token (starts with ntn_...)
 NOTION_DATABASE_ID        — Inventory database ID
-NOTION_SALES_DB_ID        — Sales log database ID
+NOTION_SALES_DB_ID        — Daily Sales Ledger database ID
+FF_SALES_LOG_DB_ID        — Raw FF Sales Log database ID (has sensible default)
 ANTHROPIC_API_KEY         — Anthropic API key (starts with sk-ant-...)
-ALLOWED_NUMBERS           — Comma-separated WhatsApp numbers (whatsapp:+63...)
-VALIDATE_TWILIO_SIGNATURE — "true" or "false" (false for sandbox/dev)
+TELEGRAM_BOT_TOKEN        — Telegram bot token from @BotFather
+TELEGRAM_CHAT_ID          — Chat ID for the 6PM daily report
+TELEGRAM_OWNER_CHAT_ID    — Chat ID for mismatch alerts (optional; defaults to TELEGRAM_CHAT_ID)
+TELEGRAM_WEBHOOK_SECRET   — Optional shared secret to reject forged webhook calls
+ALLOWED_TELEGRAM_IDS      — Comma-separated numeric user IDs allowed to chat with the bot
 ```
 
 ## Key Technical Decisions & Gotchas
-1. **REST API replies (not TwiML)** — Production WhatsApp numbers with Messaging Services require `messages.create()` REST API calls. TwiML only works reliably with the sandbox.
-2. **AsyncAnthropic client** — Sync client causes `APIConnectionError` on Railway. Must use `anthropic.AsyncAnthropic` with `await`.
-3. **`.strip()` on API keys** — Railway env vars can have trailing `\n` which causes `Illegal header value` errors.
-4. **`load_dotenv(override=True)`** — Needed because system may have empty `ANTHROPIC_API_KEY` env var that blocks dotenv.
-5. **Twilio signature validation disabled** — Set `VALIDATE_TWILIO_SIGNATURE=false` for dev/sandbox. Enable for production.
-6. **Notion property names matter** — Must match exactly: "Color/Attribute" (not "Variant"), "Unit Price" (not "Price").
-7. **Conversation memory is in-memory** — Resets on every Railway redeploy. Fine for now, could add Redis later.
-8. **Twilio error 63112** — Meta disabled the WhatsApp Business Account. Need to resolve via Meta Business Manager before production number can send replies.
+1. **AsyncAnthropic client** — Sync client causes `APIConnectionError` on Railway. Must use `anthropic.AsyncAnthropic` with `await`.
+2. **`.strip()` on API keys** — Railway env vars can have trailing `\n` which causes `Illegal header value` errors.
+3. **`load_dotenv(override=True)`** — Needed because the system may have an empty `ANTHROPIC_API_KEY` env var that blocks dotenv.
+4. **Notion property names matter** — Must match exactly: "Color/Attribute" (not "Variant"), "Unit Price" (not "Price").
+5. **Conversation memory is in-memory** — Keyed by `telegram:<user_id>`. Resets on every Railway redeploy. Fine for now, could add Redis later.
+6. **FastAPI lifespan, not on_event** — `@app.on_event("startup")` is deprecated and can be flaky in production. Use the `asynccontextmanager` lifespan passed to `FastAPI(lifespan=lifespan)`.
+7. **Scheduler callback must be `async def`** — AsyncIOScheduler runs coroutines natively. The old `asyncio.ensure_future()` wrapper silently swallowed errors; the current `async def` callback wraps the body in try/except so failures show up in Railway logs.
+8. **Telegram dedup via update_id** — Telegram retries webhook delivery if it doesn't get a 200 back quickly. We remember the last 200 update_ids for 60s and ignore duplicates.
+9. **Webhook authorization** — Two layers: (a) optional `X-Telegram-Bot-Api-Secret-Token` header check, (b) numeric user_id allowlist. Unknown senders get a "not authorized" reply that includes their ID for easy admin onboarding.
+10. **Scheduler catch-up** — If Railway redeploys exactly at 6PM, the scheduler misses that fire window. APScheduler does not catch up missed runs — hit `POST /run-daily-report` manually if this happens.
 
 ## Pending / TODO
-- [ ] Resolve Meta WABA suspension (error 63112) to enable production number replies
-- [ ] Remove unused imports (MessagingResponse, Response) after confirming production works
-- [ ] Enable Twilio signature validation for production
+- [ ] Enable `TELEGRAM_WEBHOOK_SECRET` in production for forged-request protection
+- [ ] Map Telegram user_ids to staff names (so `Handled By` can auto-fill in log_sale)
+- [ ] Investigate persistent conversation memory (Redis) so memory survives redeploys
 
 ## Future Feature Ideas
 - Persistent conversation memory (Redis or database)
-- Daily/weekly sales summary reports
+- Weekly sales summary reports
 - Low stock alerts (auto-notify when stock drops below threshold)
-- Photo receipts (handle image messages)
+- Photo receipts (handle image messages via Telegram's photo updates)
 - Export sales data to spreadsheet
-- Multi-language responses (reply in the same language as the user)
+- Multi-language replies (reply in the same language as the user, not just Bisaya vs English)
