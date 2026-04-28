@@ -3,14 +3,11 @@ import time
 import logging
 import httpx
 from collections import OrderedDict
-from contextlib import asynccontextmanager
 from dotenv import load_dotenv
 
 load_dotenv(override=True)
 
-from fastapi import BackgroundTasks, FastAPI, Request, Response
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from apscheduler.triggers.cron import CronTrigger
+from fastapi import BackgroundTasks, FastAPI, Header, Request, Response
 
 import agent
 import notion_client as notion
@@ -41,43 +38,14 @@ TELEGRAM_WEBHOOK_SECRET = (os.getenv("TELEGRAM_WEBHOOK_SECRET") or "").strip()
 # Defaults to TELEGRAM_CHAT_ID — for a private DM, chat_id == user_id.
 OWNER_TELEGRAM_ID = (os.getenv("OWNER_TELEGRAM_ID") or TELEGRAM_CHAT_ID or "").strip()
 
-
-# --- Scheduled daily report (6PM Mon-Sat, Philippine time UTC+8) ---
-scheduler = AsyncIOScheduler()
-
-
-async def _scheduled_daily_report():
-    """Scheduler callback — runs the daily report and logs the outcome.
-    AsyncIOScheduler runs coroutines natively on the event loop."""
-    try:
-        logger.info("Scheduler fired — running daily report")
-        result = await _run_daily_report()
-        logger.info(f"Scheduled daily report done: {result}")
-    except Exception as e:
-        logger.error(f"Scheduled daily report failed: {e}", exc_info=True)
+# Hermes shared secret — required header on POST /run-daily-report when set.
+# The 6PM Mon-Sat cron is owned by an external Hermes agent that hits this
+# endpoint with X-Hermes-Secret. Leave unset to disable the check (e.g. for
+# local development).
+HERMES_SECRET = (os.getenv("HERMES_SECRET") or "").strip()
 
 
-scheduler.add_job(
-    _scheduled_daily_report,
-    CronTrigger(hour=18, minute=0, day_of_week="mon-sat", timezone="Asia/Manila"),
-    id="daily_report",
-    name="6PM Daily Sales Report (Mon-Sat)",
-    replace_existing=True,
-)
-
-
-@asynccontextmanager
-async def lifespan(_app: FastAPI):
-    scheduler.start()
-    job = scheduler.get_job("daily_report")
-    next_run = job.next_run_time if job else None
-    logger.info(f"APScheduler started — next daily report at {next_run}")
-    yield
-    scheduler.shutdown()
-    logger.info("APScheduler shut down")
-
-
-app = FastAPI(title="Flame & Finish Inventory Bot", lifespan=lifespan)
+app = FastAPI(title="Flame & Finish Inventory Bot")
 
 
 @app.get("/")
@@ -501,33 +469,22 @@ async def _run_daily_report() -> dict:
 
 
 @app.post("/run-daily-report")
-async def daily_report_endpoint():
+async def daily_report_endpoint(
+    x_hermes_secret: str | None = Header(default=None, alias="X-Hermes-Secret"),
+):
+    """Trigger the daily sales report. Owned by Hermes (external cron) when
+    HERMES_SECRET is configured — Hermes hits this endpoint at 18:00 Asia/Manila
+    Mon-Sat with X-Hermes-Secret. Manual triggers from the owner's terminal
+    must include the same header (e.g. -H 'X-Hermes-Secret: <value>').
+    """
+    if HERMES_SECRET and x_hermes_secret != HERMES_SECRET:
+        logger.warning("run-daily-report: missing/invalid X-Hermes-Secret")
+        return Response(status_code=403)
     result = await _run_daily_report()
     return result
 
 
 # --- Diagnostics ---
-
-@app.get("/scheduler-status")
-async def scheduler_status():
-    """Diagnostic — confirms scheduler is alive and shows the next fire time."""
-    from datetime import datetime
-    from zoneinfo import ZoneInfo
-    jobs = []
-    for job in scheduler.get_jobs():
-        jobs.append({
-            "id": job.id,
-            "name": job.name,
-            "next_run_time": str(job.next_run_time) if job.next_run_time else None,
-            "trigger": str(job.trigger),
-        })
-    return {
-        "scheduler_running": scheduler.running,
-        "server_time_utc": datetime.utcnow().isoformat(),
-        "server_time_manila": datetime.now(ZoneInfo("Asia/Manila")).isoformat(),
-        "jobs": jobs,
-    }
-
 
 @app.post("/test-telegram")
 async def test_telegram():
