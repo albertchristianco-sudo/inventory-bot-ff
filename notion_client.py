@@ -191,40 +191,112 @@ async def get_unprocessed_sales() -> list[dict]:
     return sales
 
 
+def _normalize_words(text: str) -> set[str]:
+    """Lowercase, drop punctuation, split on whitespace. Used for fuzzy match."""
+    if not text:
+        return set()
+    cleaned = text.lower()
+    for ch in "()[]{},.":
+        cleaned = cleaned.replace(ch, " ")
+    cleaned = cleaned.replace("/", " ").replace("-", " ").replace("_", " ")
+    return {w for w in cleaned.split() if w}
+
+
 async def find_inventory_product(category: str, color: str) -> dict | None:
-    """Find the best matching inventory product by category and color word overlap."""
-    url = f"{NOTION_BASE_URL}/databases/{NOTION_DATABASE_ID}/query"
-    payload = {
-        "filter": {
-            "property": "Category",
-            "select": {"equals": category},
-        }
-    }
-    async with httpx.AsyncClient() as client:
-        resp = await client.post(url, headers=NOTION_HEADERS, json=payload)
-        resp.raise_for_status()
-        data = resp.json()
+    """Find the best matching inventory product. Tries multiple strategies in order:
 
-    target_words = set(color.lower().replace("(", "").replace(")", "").split())
-    best_match = None
-    best_score = 0
+    1. Strong: Category + Color/Attribute word overlap
+    2. Strong: FF Item Code substring match anywhere in the input
+    3. Weak: Category + Product Name word overlap
+    4. Weak: Cross-category Product Name word overlap (last resort)
 
-    for page in data.get("results", []):
+    Returns a dict with `confidence` ("strong" or "weak") and `match_reason`
+    (human-readable explanation of why it matched), plus the usual product
+    fields. Returns None only if nothing in the inventory matches at all.
+    """
+    target_words = _normalize_words(color)
+    if not target_words:
+        return None
+
+    async def _query(payload: dict) -> list:
+        url = f"{NOTION_BASE_URL}/databases/{NOTION_DATABASE_ID}/query"
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(url, headers=NOTION_HEADERS, json=payload)
+            resp.raise_for_status()
+            return resp.json().get("results", [])
+
+    def _build(page, confidence: str, reason: str) -> dict:
         props = page["properties"]
-        product_color = _get_rich_text(props, "Color/Attribute")
-        product_words = set(product_color.lower().replace("(", "").replace(")", "").split())
-        score = len(target_words & product_words)
-        if score > best_score:
-            best_score = score
-            best_match = {
-                "id": page["id"],
-                "name": _get_title(props, "Product Name"),
-                "color": product_color,
-                "stock": _get_number(props, "Stock"),
-                "category": _get_select(props, "Category"),
-            }
+        return {
+            "id": page["id"],
+            "name": _get_title(props, "Product Name"),
+            "color": _get_rich_text(props, "Color/Attribute"),
+            "item_code": _get_rich_text(props, "FF Item Code"),
+            "stock": _get_number(props, "Stock"),
+            "category": _get_select(props, "Category"),
+            "confidence": confidence,
+            "match_reason": reason,
+        }
 
-    return best_match if best_score > 0 else None
+    # Strategies 1 + 2 + 3: scoped to the sale's category if provided
+    if category:
+        results = await _query({
+            "filter": {"property": "Category", "select": {"equals": category}}
+        })
+
+        # Strategy 1: Color/Attribute word overlap (strong)
+        best_color = None
+        best_color_score = 0
+        for page in results:
+            props = page["properties"]
+            color_words = _normalize_words(_get_rich_text(props, "Color/Attribute"))
+            score = len(target_words & color_words)
+            if score > best_color_score:
+                best_color_score = score
+                best_color = page
+        if best_color and best_color_score > 0:
+            return _build(best_color, "strong", f"matched {best_color_score} color word(s)")
+
+        # Strategy 2: FF Item Code substring (strong)
+        # If any target word looks like a product code, check item_code containment
+        for page in results:
+            props = page["properties"]
+            item_code = _get_rich_text(props, "FF Item Code").lower()
+            if not item_code:
+                continue
+            for word in target_words:
+                if len(word) >= 3 and (word in item_code or item_code in word):
+                    return _build(page, "strong", f"item code match: {item_code}")
+
+        # Strategy 3: Product Name word overlap within same category (weak)
+        best_name = None
+        best_name_score = 0
+        for page in results:
+            props = page["properties"]
+            name_words = _normalize_words(_get_title(props, "Product Name"))
+            score = len(target_words & name_words)
+            if score > best_name_score:
+                best_name_score = score
+                best_name = page
+        if best_name and best_name_score > 0:
+            return _build(best_name, "weak", f"product name match in {category}")
+
+    # Strategy 4: Cross-category Product Name word overlap (last resort, weak)
+    all_results = await _query({})
+    best_any = None
+    best_any_score = 0
+    for page in all_results:
+        props = page["properties"]
+        name_words = _normalize_words(_get_title(props, "Product Name"))
+        color_words = _normalize_words(_get_rich_text(props, "Color/Attribute"))
+        score = len(target_words & (name_words | color_words))
+        if score > best_any_score:
+            best_any_score = score
+            best_any = page
+    if best_any and best_any_score > 0:
+        return _build(best_any, "weak", "cross-category product name match")
+
+    return None
 
 
 async def mark_sale_processed(page_id: str) -> bool:

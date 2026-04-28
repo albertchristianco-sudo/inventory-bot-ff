@@ -23,6 +23,13 @@ _seen_update_ids: OrderedDict[int, float] = OrderedDict()
 _DEDUP_TTL = 60  # seconds to remember an update_id
 _DEDUP_MAX = 200  # max entries to keep
 
+# Pending approvals: sales that the daily report couldn't auto-match with high
+# confidence. Owner approves/skips via Telegram commands. Keyed by invoice
+# number (uppercased). In-memory — lost on Railway redeploy, but the underlying
+# sales rows stay unprocessed in Notion so they'll show up in the next report.
+_pending_approvals: dict[str, dict] = {}
+_PENDING_TTL = 24 * 60 * 60  # 24 hours
+
 # Railway env vars can have trailing whitespace/newlines — strip everything
 # we inject into HTTP headers or URLs.
 TELEGRAM_BOT_TOKEN = (os.getenv("TELEGRAM_BOT_TOKEN") or "").strip()
@@ -188,7 +195,22 @@ async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
 
 
 async def _process_and_reply(body: str, sender: str, chat_id):
-    """Background task: process message through Claude and reply via Telegram."""
+    """Background task: handle approval commands directly, otherwise route to Claude."""
+    text = body.strip()
+    text_lower = text.lower()
+
+    # Approval commands — handled here, not by the LLM, for predictability
+    if text_lower.startswith("approve "):
+        await _handle_approval(text[len("approve "):], chat_id)
+        return
+    if text_lower.startswith("skip "):
+        await _handle_skip(text[len("skip "):], chat_id)
+        return
+    if text_lower in ("pending", "/pending"):
+        await _send_telegram_to(chat_id, _format_pending_list())
+        return
+
+    # Everything else: route through Claude
     try:
         reply = await agent.handle_message(body, sender=sender)
     except Exception as e:
@@ -231,6 +253,150 @@ async def telegram_webhook_info():
     return await _tg_call("getWebhookInfo", {})
 
 
+# --- Pending approvals ---
+
+def _cleanup_pending():
+    """Drop entries older than _PENDING_TTL."""
+    now = time.time()
+    expired = [k for k, v in _pending_approvals.items() if v["expires_at"] < now]
+    for k in expired:
+        del _pending_approvals[k]
+
+
+def _invoice_key(sale: dict) -> str:
+    """Stable key for a pending sale. Uses invoice number if present, else page id."""
+    inv = (sale.get("invoice") or "").strip().upper()
+    return inv or f"SALE:{sale['id'][:8]}"
+
+
+async def _send_approval_request(invoice: str) -> None:
+    """Send a Telegram message asking the owner to approve or skip a pending sale."""
+    pending = _pending_approvals.get(invoice)
+    if not pending:
+        return
+    sale = pending["sale"]
+    guess = pending["best_guess"]
+    qty = int(sale.get("quantity") or 0)
+    price = sale.get("price_per_unit") or 0.0
+    unit = sale.get("unit") or "pcs"
+
+    lines = [
+        f"🤔 Need approval — {invoice}",
+        "",
+        "📋 SALE",
+        f"• {qty} {unit} {sale.get('category') or '—'} ({sale.get('color') or '—'}) @ ₱{price:,.0f}",
+        f"• {sale.get('salesperson') or '—'} → {sale.get('buyer') or '—'}",
+        f"• {sale.get('payment_method') or '—'} — {sale.get('payment_status') or '—'}",
+        "",
+    ]
+
+    if guess:
+        stock = guess.get("stock")
+        new_stock = max(0, int(stock) - qty) if stock is not None else None
+        confidence = guess.get("confidence", "?")
+        lines += [
+            f"🎯 BEST GUESS ({confidence} match — {guess.get('match_reason', '')})",
+            f"• {guess.get('name') or '—'}",
+        ]
+        if guess.get("item_code"):
+            lines.append(f"• Code: {guess['item_code']}")
+        if stock is not None:
+            lines.append(f"• Stock: {int(stock)} → {new_stock} (-{qty})")
+        else:
+            lines.append("• Stock: not set in Notion")
+        lines += [
+            "",
+            "Reply:",
+            f"• approve {invoice} — deduct from best guess",
+            f"• skip {invoice} — mark processed, no deduction",
+            "• Or tell me the correct product",
+        ]
+    else:
+        lines += [
+            "⚠️ No inventory match found.",
+            "",
+            "Reply:",
+            f"• skip {invoice} — mark processed, no deduction",
+            "• Or tell me the correct product",
+        ]
+
+    await _send_telegram_alert("\n".join(lines))
+
+
+async def _handle_approval(invoice_raw: str, chat_id) -> None:
+    """Owner replied 'approve <invoice>' — deduct from best guess and mark processed."""
+    invoice = invoice_raw.strip().upper()
+    _cleanup_pending()
+    pending = _pending_approvals.get(invoice)
+    if not pending:
+        await _send_telegram_to(chat_id, f"⚠️ No pending sale for {invoice}. Send 'pending' to see what's waiting.")
+        return
+
+    sale = pending["sale"]
+    guess = pending["best_guess"]
+    if not guess:
+        await _send_telegram_to(
+            chat_id,
+            f"⚠️ {invoice} has no best guess to approve. Reply 'skip {invoice}' or tell me the right product.",
+        )
+        return
+    if guess.get("stock") is None:
+        await _send_telegram_to(
+            chat_id,
+            f"⚠️ {guess.get('name')} has no Stock value in Notion. Set it first, then re-run the report.",
+        )
+        return
+
+    qty = int(sale.get("quantity") or 0)
+    new_stock = max(0, int(guess["stock"]) - qty)
+    try:
+        await notion.update_stock(guess["id"], new_stock)
+        await notion.mark_sale_processed(sale["id"])
+    except Exception as e:
+        logger.error(f"Approval {invoice} failed: {e}", exc_info=True)
+        await _send_telegram_to(chat_id, f"❌ Failed to apply {invoice}: {e}")
+        return
+
+    del _pending_approvals[invoice]
+    reply = f"✅ {invoice} approved\n• {guess['name']}: {int(guess['stock'])} → {new_stock} (-{qty})"
+    if new_stock < 20:
+        reply += f"\n⚠️ {new_stock} pcs left — REORDER NEEDED"
+    await _send_telegram_to(chat_id, reply)
+
+
+async def _handle_skip(invoice_raw: str, chat_id) -> None:
+    """Owner replied 'skip <invoice>' — mark processed without deducting any stock."""
+    invoice = invoice_raw.strip().upper()
+    _cleanup_pending()
+    pending = _pending_approvals.get(invoice)
+    if not pending:
+        await _send_telegram_to(chat_id, f"⚠️ No pending sale for {invoice}.")
+        return
+
+    try:
+        await notion.mark_sale_processed(pending["sale"]["id"])
+    except Exception as e:
+        logger.error(f"Skip {invoice} failed: {e}", exc_info=True)
+        await _send_telegram_to(chat_id, f"❌ Failed to skip {invoice}: {e}")
+        return
+
+    del _pending_approvals[invoice]
+    await _send_telegram_to(chat_id, f"✅ {invoice} skipped — marked processed, no stock deducted.")
+
+
+def _format_pending_list() -> str:
+    _cleanup_pending()
+    if not _pending_approvals:
+        return "No pending approvals."
+    lines = [f"⏳ {len(_pending_approvals)} pending approval(s):"]
+    for invoice, p in _pending_approvals.items():
+        sale = p["sale"]
+        guess = p["best_guess"]
+        guess_str = f" → {guess['name']}" if guess else " → ❌ no match"
+        lines.append(f"• {invoice}: {sale.get('category') or '—'} / {sale.get('color') or '—'}{guess_str}")
+    return "\n".join(lines)
+
+
 # --- Daily report ---
 
 async def _run_daily_report() -> dict:
@@ -242,12 +408,16 @@ async def _run_daily_report() -> dict:
         await _send_telegram(f"🔥 Flame & Finish — Daily Sales Report\n📅 {today_str}\n\nNo sales logged today.")
         return {"processed": 0, "grand_total": 0}
 
+    _cleanup_pending()
+
     lines = ["🔥 Flame & Finish — Daily Sales Report", f"📅 {today_str}", "", "💰 SALES SUMMARY"]
     total_revenue = 0.0
     total_installation = 0.0
     alerts = []
+    pending_invoices = []
     processed_count = 0
     skipped_count = 0
+    pending_count = 0
 
     for sale in sales:
         buyer = (sale["buyer"] or "").strip()
@@ -268,23 +438,30 @@ async def _run_daily_report() -> dict:
         if sale["category"]:
             inv = await notion.find_inventory_product(sale["category"], sale["color"] or "")
 
-        if inv and inv["stock"] is not None:
+        # Strong match: auto-deduct and mark processed.
+        # Weak or no match: queue for owner approval and leave Processed=false.
+        sale_status = ""
+        if inv and inv.get("confidence") == "strong" and inv.get("stock") is not None:
             new_stock = max(0, int(inv["stock"]) - int(qty))
             await notion.update_stock(inv["id"], new_stock)
+            await notion.mark_sale_processed(sale["id"])
+            processed_count += 1
             if new_stock < 20:
                 alerts.append(f"⚠️ {inv['name']} ({inv['color']}): {new_stock} pcs left — REORDER NEEDED")
+            sale_status = f"✅ deducted from {inv['name']}"
         else:
-            alert_msg = f"⚠️ No inventory match for: {sale['category']} / {sale['color']} (check manually)"
-            alerts.append(alert_msg)
-            await _send_telegram_alert(
-                f"🔍 Daily Report — Need Clarification\n\n"
-                f"I couldn't match this sale to inventory:\n"
-                f"• Category: {sale['category']}\n"
-                f"• Color: {sale['color'] or '—'}\n"
-                f"• Qty: {int(qty)} {sale['unit'] or 'pcs'}\n"
-                f"• Buyer: {buyer}\n\n"
-                f"Please check manually and update inventory if needed."
-            )
+            invoice_key = _invoice_key(sale)
+            _pending_approvals[invoice_key] = {
+                "sale": sale,
+                "best_guess": inv,
+                "expires_at": time.time() + _PENDING_TTL,
+            }
+            pending_invoices.append(invoice_key)
+            pending_count += 1
+            if inv:
+                sale_status = f"🤔 needs approval — best guess: {inv['name']} ({inv.get('confidence')})"
+            else:
+                sale_status = "⚠️ no inventory match — needs your input"
 
         unit = sale["unit"] or "pcs"
         lines.append(f"• {sale['category']} ({sale['color']}) — {int(qty)} {unit} @ P{price:,.0f} = P{subtotal:,.0f}")
@@ -292,10 +469,8 @@ async def _run_daily_report() -> dict:
         lines.append(f"  🧾 {sale['invoice'] or '—'}  |  💳 {sale['payment_method'] or '—'} — {sale['payment_status'] or '—'}")
         if fee:
             lines.append(f"  🔧 Installation: P{fee:,.0f}")
+        lines.append(f"  {sale_status}")
         lines.append("")
-
-        await notion.mark_sale_processed(sale["id"])
-        processed_count += 1
 
     grand_total = total_revenue + total_installation
     lines += ["📊 TOTALS", f"• Total Revenue: P{total_revenue:,.0f}", f"• Installation Fees: P{total_installation:,.0f}", f"• Grand Total: P{grand_total:,.0f}", ""]
@@ -305,14 +480,24 @@ async def _run_daily_report() -> dict:
         lines += alerts
         lines.append("")
 
-    summary = f"✅ {processed_count} sale(s) processed."
+    summary = f"✅ {processed_count} sale(s) auto-processed."
+    if pending_count:
+        summary += f" 🤔 {pending_count} need your approval (see follow-ups below)."
     if skipped_count:
         summary += f" {skipped_count} placeholder(s) cleared."
     lines.append(summary)
 
     await _send_telegram("\n".join(lines))
-    logger.info(f"Daily report sent — {processed_count} sales, grand total P{grand_total:,.0f}")
-    return {"processed": processed_count, "grand_total": grand_total}
+
+    # Send one approval-request message per pending sale so each is independently actionable
+    for invoice in pending_invoices:
+        await _send_approval_request(invoice)
+
+    logger.info(
+        f"Daily report sent — auto={processed_count}, pending={pending_count}, "
+        f"grand total P{grand_total:,.0f}"
+    )
+    return {"processed": processed_count, "pending": pending_count, "grand_total": grand_total}
 
 
 @app.post("/run-daily-report")
