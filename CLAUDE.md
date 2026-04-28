@@ -11,7 +11,7 @@ via Telegram messages — powered by Claude AI with Notion as the database.
 - **Messaging:** Telegram Bot API (inbound via webhook, outbound via HTTPS)
 - **Database:** Notion API (inventory DB + daily sales ledger + raw sales log)
 - **AI Brain:** Claude API (`claude-sonnet-4-6`) via `anthropic` async SDK
-- **Scheduler:** APScheduler (6PM Mon-Sat daily report, Asia/Manila tz)
+- **Scheduler:** External Hermes agent (cron 0 10 * * 1-6 UTC = 18:00 Mon-Sat Asia/Manila); calls `POST /run-daily-report` with an `X-Hermes-Secret` header
 - **Hosting:** Railway (auto-deploys from GitHub on push)
 - **Repo:** github.com/albertchristianco-sudo/inventory-bot-ff
 
@@ -26,19 +26,24 @@ Telegram Message
     ← {"ok": true}
   ← Telegram reply appears
 
-+ APScheduler fires _run_daily_report() at 18:00 Mon-Sat (Asia/Manila),
-  which pulls unprocessed sales from FF Sales Log, matches them against
-  inventory, deducts stock, and posts a summary to TELEGRAM_CHAT_ID.
-  Mismatches trigger a clarification alert to TELEGRAM_CHAT_ID.
++ External Hermes agent fires `POST /run-daily-report` with `X-Hermes-Secret`
+  at 0 10 * * 1-6 UTC (= 18:00 Mon-Sat Asia/Manila). The endpoint runs the
+  multi-strategy matcher against the FF Inventory database for each
+  unprocessed sale and either:
+    - strong match  → auto-deducts stock + flips Processed=true
+    - weak / no match → queues for owner approval (Processed stays false)
+                        and DMs the owner with the best guess
+  Owner replies "approve INV-XXXX" or "skip INV-XXXX" via Telegram to
+  resolve each pending sale.
 ```
 
 ## Key Files
 | File | Purpose |
 |---|---|
-| `main.py` | FastAPI server, Telegram webhook at `/telegram-webhook`, scheduler, daily report, diagnostics |
+| `main.py` | FastAPI server, Telegram webhook at `/telegram-webhook`, daily-report endpoint (Hermes-triggered), owner-approval flow (`_pending_approvals`, `_handle_approval`, `_handle_skip`), diagnostics |
 | `agent.py` | Claude async API client, agentic tool-use loop, 4 tools, keyword alias map, conversation memory |
-| `notion_client.py` | Notion API functions: query_products, update_stock, update_price, log_sale, get_unprocessed_sales, find_inventory_product, mark_sale_processed |
-| `requirements.txt` | Unpinned deps: fastapi, uvicorn, anthropic, httpx, python-dotenv, python-multipart, apscheduler |
+| `notion_client.py` | Notion API: query_products, update_stock, update_price, log_sale, get_unprocessed_sales, multi-strategy `find_inventory_product` (returns confidence + match_reason), mark_sale_processed |
+| `requirements.txt` | Unpinned deps: fastapi, uvicorn, anthropic, httpx, python-dotenv, python-multipart |
 | `railway.json` | Nixpacks builder config for Railway |
 | `Procfile` | Railway start command: `uvicorn main:app --host 0.0.0.0 --port $PORT` |
 | `.env` | Local env vars (never committed) |
@@ -118,6 +123,47 @@ The allowed sender is set by `OWNER_TELEGRAM_ID`, which defaults to
 bot). Any message from a non-owner sender is rejected with a short "this bot is
 private" reply.
 
+## Daily Report & Approval Flow
+
+The 6PM scheduler runs `_run_daily_report()` against the FF Sales Log and
+classifies each unprocessed sale into one of three buckets:
+
+| Bucket | Trigger | Action |
+|---|---|---|
+| **Auto-processed** | `find_inventory_product` returns confidence=`strong` AND product has a `Stock` value | Deducts qty from inventory, marks `Processed=true`, includes in summary |
+| **Pending approval** | confidence=`weak` (Product Name match only) OR no Color/Attribute match | Stores entry in `_pending_approvals[invoice]`, leaves `Processed=false`, sends a separate DM with the best guess |
+| **No match** | Matcher returns None | Same as pending (queued without a best guess) |
+
+### Multi-strategy matcher (`notion_client.find_inventory_product`)
+
+Runs strategies in order; first match wins. Returns dict with `confidence` ∈ {`strong`, `weak`} and `match_reason`:
+
+1. **Strong** — Category + Color/Attribute word overlap (existing behavior)
+2. **Strong** — FF Item Code substring match anywhere in the input
+3. **Weak** — Category + Product Name word overlap (catches the case where Color/Attribute is empty but the name contains the color, e.g., `"Pine | DY 2011A"` matching the input `"PINE"`)
+4. **Weak** — Cross-category Product Name match (last resort)
+
+Tokenization splits on whitespace, parens, slashes, dashes, underscores; lowercases. Uses set-intersection scoring.
+
+### Owner approval commands (Telegram chat)
+
+Parsed in `_process_and_reply` BEFORE the message reaches the LLM, for predictability:
+
+| Command | Effect |
+|---|---|
+| `approve INV-0201` | Pulls `_pending_approvals['INV-0201']`, deducts qty from the best guess, marks the sale processed, sends a confirmation. |
+| `skip INV-0201` | Marks the sale processed without deducting (use for duplicates, errors, or if inventory was already updated manually). |
+| `pending` | Lists all pending approvals with their best guesses. |
+| Anything else | Falls through to Claude (`agent.handle_message`) — useful for "no, that's actually White Oak DY 2008" |
+
+Invoice keys are uppercased; commands are case-insensitive (`approve inv-0201` works).
+
+### Pending state
+
+- Stored in-memory: `_pending_approvals: dict[str, dict]` keyed by `_invoice_key(sale)` (uppercased invoice number, falling back to `SALE:<page-id-prefix>` if no invoice).
+- 24-hour TTL — entries older than that get dropped on next access.
+- **Lost on Railway redeploy.** This is intentional — sales stay `Processed=false` in Notion, so they reappear in the next daily report and the owner sees them again. No data loss, just a re-prompt.
+
 ## Telegram Setup
 
 ### Bot creation
@@ -152,15 +198,14 @@ mismatch clarification alerts are sent to `TELEGRAM_CHAT_ID` (same chat).
 - **Important:** Railway env vars may have trailing newlines — code uses `.strip()` on API keys
 
 ## Endpoints
-| Method | Path | Purpose |
-|---|---|---|
-| GET | `/` | Health check |
-| POST | `/telegram-webhook` | Telegram pushes incoming messages here |
-| POST | `/telegram-setup-webhook` | One-shot: register the webhook URL with Telegram |
-| GET | `/telegram-webhook-info` | Diagnostic: show Telegram's view of the registered webhook |
-| POST | `/run-daily-report` | Manually trigger the daily sales report (same work as 6PM cron) |
-| GET | `/scheduler-status` | Diagnostic: confirm scheduler is armed, show next fire time |
-| POST | `/test-telegram` | Diagnostic: send a test message and return the raw Telegram API response |
+| Method | Path | Auth | Purpose |
+|---|---|---|---|
+| GET | `/` | — | Health check |
+| POST | `/telegram-webhook` | optional `X-Telegram-Bot-Api-Secret-Token` + owner-id | Telegram pushes incoming messages here |
+| POST | `/telegram-setup-webhook` | — | One-shot: register the webhook URL with Telegram |
+| GET | `/telegram-webhook-info` | — | Diagnostic: show Telegram's view of the registered webhook |
+| POST | `/run-daily-report` | required `X-Hermes-Secret` (when `HERMES_SECRET` is set) | Trigger the daily sales report; Hermes fires this on its cron |
+| POST | `/test-telegram` | — | Diagnostic: send a test message and return the raw Telegram API response |
 
 ## Environment Variables
 ```
@@ -173,6 +218,7 @@ TELEGRAM_BOT_TOKEN        — Telegram bot token from @BotFather
 TELEGRAM_CHAT_ID          — Chat ID for the 6PM daily report
 OWNER_TELEGRAM_ID         — Owner's numeric user ID (only allowed sender; defaults to TELEGRAM_CHAT_ID)
 TELEGRAM_WEBHOOK_SECRET   — Optional shared secret to reject forged webhook calls
+HERMES_SECRET             — Shared secret with the Hermes cron agent; required header on POST /run-daily-report when set
 ```
 
 ## Key Technical Decisions & Gotchas
@@ -181,11 +227,11 @@ TELEGRAM_WEBHOOK_SECRET   — Optional shared secret to reject forged webhook ca
 3. **`load_dotenv(override=True)`** — Needed because the system may have an empty `ANTHROPIC_API_KEY` env var that blocks dotenv.
 4. **Notion property names matter** — Must match exactly: "Color/Attribute" (not "Variant"), "Unit Price" (not "Price").
 5. **Conversation memory is in-memory** — Keyed by `telegram:<user_id>`. Resets on every Railway redeploy. Fine for now, could add Redis later.
-6. **FastAPI lifespan, not on_event** — `@app.on_event("startup")` is deprecated and can be flaky in production. Use the `asynccontextmanager` lifespan passed to `FastAPI(lifespan=lifespan)`.
-7. **Scheduler callback must be `async def`** — AsyncIOScheduler runs coroutines natively. The old `asyncio.ensure_future()` wrapper silently swallowed errors; the current `async def` callback wraps the body in try/except so failures show up in Railway logs.
-8. **Telegram dedup via update_id** — Telegram retries webhook delivery if it doesn't get a 200 back quickly. We remember the last 200 update_ids for 60s and ignore duplicates.
-9. **Webhook authorization** — Two layers: (a) optional `X-Telegram-Bot-Api-Secret-Token` header check, (b) single-owner check — only `OWNER_TELEGRAM_ID` (defaults to `TELEGRAM_CHAT_ID`) may interact. Other senders get a short "this bot is private" reply.
-10. **Scheduler catch-up** — If Railway redeploys exactly at 6PM, the scheduler misses that fire window. APScheduler does not catch up missed runs — hit `POST /run-daily-report` manually if this happens.
+6. **Telegram dedup via update_id** — Telegram retries webhook delivery if it doesn't get a 200 back quickly. We remember the last 200 update_ids for 60s and ignore duplicates.
+7. **Webhook authorization** — Two layers: (a) optional `X-Telegram-Bot-Api-Secret-Token` header check, (b) single-owner check — only `OWNER_TELEGRAM_ID` (defaults to `TELEGRAM_CHAT_ID`) may interact. Other senders get a short "this bot is private" reply.
+8. **Cron is owned by an external Hermes agent, not by this process** — Hermes hits `POST /run-daily-report` at 0 10 * * 1-6 UTC (= 18:00 Mon-Sat Asia/Manila) with `X-Hermes-Secret`. If `HERMES_SECRET` is unset on Railway, the endpoint accepts any caller (useful for local dev, dangerous in prod). If Hermes is down or misconfigured, the bot doesn't auto-fire — call `curl -X POST .../run-daily-report -H 'X-Hermes-Secret: <value>'` manually.
+9. **Pending approvals are in-memory** — `_pending_approvals` lives in process RAM, so a Railway redeploy between the daily report and the owner's reply loses the queue. Safe by design: pending sales stay `Processed=false` in Notion and re-surface in the next report. Approval commands referencing a lost invoice get a "no pending sale for X" reply.
+10. **Approval commands bypass the LLM** — `approve`, `skip`, and `pending` are parsed in `_process_and_reply` and never reach Claude. This makes them deterministic and safe (no risk of the LLM hallucinating a deduction). Free-form corrections ("no, that's White Oak") still flow to the agent.
 
 ## Pending / TODO
 - [ ] Enable `TELEGRAM_WEBHOOK_SECRET` in production for forged-request protection
