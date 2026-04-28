@@ -5,6 +5,7 @@ NOTION_API_KEY = os.getenv("NOTION_API_KEY")
 NOTION_DATABASE_ID = os.getenv("NOTION_DATABASE_ID")
 NOTION_SALES_DB_ID = os.getenv("NOTION_SALES_DB_ID")
 FF_SALES_LOG_DB_ID = os.getenv("FF_SALES_LOG_DB_ID", "a3406a84-4be0-41d0-9593-8090cae4133c")
+FF_SALES_ARCHIVE_DB_ID = os.getenv("FF_SALES_ARCHIVE_DB_ID")  # destination for weekly archive
 NOTION_BASE_URL = "https://api.notion.com/v1"
 NOTION_HEADERS = {
     "Authorization": f"Bearer {NOTION_API_KEY}",
@@ -348,3 +349,126 @@ def _get_date(props: dict, key: str) -> str:
         return props[key]["date"]["start"]
     except (KeyError, TypeError):
         return ""
+
+
+# --- Weekly archive: copy Processed sales from FF Sales Log → FF Sales Archive ---
+
+def _property_for_create(prop: dict) -> dict | None:
+    """Convert a Notion property from GET (read) format into the shape required
+    for POST /pages. Returns None for read-only types (formula, rollup, etc.)
+    so callers can drop them from the create payload."""
+    ptype = prop.get("type")
+    if ptype == "title":
+        text = "".join(t.get("plain_text", "") for t in prop.get("title") or [])
+        return {"title": [{"text": {"content": text}}]} if text else {"title": []}
+    if ptype == "rich_text":
+        text = "".join(t.get("plain_text", "") for t in prop.get("rich_text") or [])
+        return {"rich_text": [{"text": {"content": text}}]} if text else {"rich_text": []}
+    if ptype == "number":
+        n = prop.get("number")
+        return {"number": n} if n is not None else None
+    if ptype == "select":
+        sel = prop.get("select")
+        return {"select": {"name": sel["name"]}} if sel else None
+    if ptype == "multi_select":
+        opts = prop.get("multi_select") or []
+        return {"multi_select": [{"name": o["name"]} for o in opts]}
+    if ptype == "date":
+        d = prop.get("date")
+        if not d or not d.get("start"):
+            return None
+        out = {"start": d["start"]}
+        if d.get("end"):
+            out["end"] = d["end"]
+        return {"date": out}
+    if ptype == "checkbox":
+        return {"checkbox": prop.get("checkbox", False)}
+    if ptype == "phone_number":
+        return {"phone_number": prop.get("phone_number")}
+    if ptype == "email":
+        return {"email": prop.get("email")}
+    if ptype == "url":
+        return {"url": prop.get("url")}
+    if ptype == "people":
+        return {"people": [{"id": p["id"]} for p in prop.get("people") or [] if p.get("id")]}
+    # Unsupported / read-only (formula, rollup, files, relation, status, etc.)
+    return None
+
+
+async def _get_processed_sales_raw() -> list[dict]:
+    """Fetch full raw page objects (not flattened) for all Processed sales.
+    We need the raw form so we can copy every property to the archive verbatim."""
+    url = f"{NOTION_BASE_URL}/databases/{FF_SALES_LOG_DB_ID}/query"
+    payload = {
+        "filter": {"property": "Processed", "checkbox": {"equals": True}}
+    }
+    pages = []
+    async with httpx.AsyncClient() as client:
+        while True:
+            resp = await client.post(url, headers=NOTION_HEADERS, json=payload)
+            resp.raise_for_status()
+            data = resp.json()
+            pages.extend(data.get("results", []))
+            if not data.get("has_more"):
+                break
+            payload["start_cursor"] = data["next_cursor"]
+    return pages
+
+
+async def _create_archive_page(properties: dict) -> str:
+    """Create a single row in FF_SALES_ARCHIVE_DB_ID. Returns the new page ID."""
+    url = f"{NOTION_BASE_URL}/pages"
+    payload = {
+        "parent": {"database_id": FF_SALES_ARCHIVE_DB_ID},
+        "properties": properties,
+    }
+    async with httpx.AsyncClient() as client:
+        resp = await client.post(url, headers=NOTION_HEADERS, json=payload)
+        resp.raise_for_status()
+        return resp.json()["id"]
+
+
+async def _soft_delete_page(page_id: str) -> bool:
+    """Move a page to Notion's trash (recoverable for 30 days)."""
+    url = f"{NOTION_BASE_URL}/pages/{page_id}"
+    async with httpx.AsyncClient() as client:
+        resp = await client.patch(url, headers=NOTION_HEADERS, json={"archived": True})
+        resp.raise_for_status()
+    return True
+
+
+async def archive_processed_sales() -> dict:
+    """Copy every Processed=true row from FF Sales Log to FF Sales Archive,
+    then soft-delete the source row. Pending (Processed=false) sales are
+    left in place. Returns a per-step count for the report."""
+    if not FF_SALES_ARCHIVE_DB_ID:
+        raise RuntimeError(
+            "FF_SALES_ARCHIVE_DB_ID is not set — create the archive database in "
+            "Notion, share it with the integration, and set this env var on Railway."
+        )
+
+    pages = await _get_processed_sales_raw()
+    archived = 0
+    failed = 0
+    failures: list[str] = []
+
+    for page in pages:
+        try:
+            new_props = {}
+            for name, prop in (page.get("properties") or {}).items():
+                converted = _property_for_create(prop)
+                if converted is not None:
+                    new_props[name] = converted
+            await _create_archive_page(new_props)
+            await _soft_delete_page(page["id"])
+            archived += 1
+        except Exception as e:
+            failed += 1
+            failures.append(f"{page['id'][:8]}: {e}")
+
+    return {
+        "candidates": len(pages),
+        "archived": archived,
+        "failed": failed,
+        "failures": failures,
+    }

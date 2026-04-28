@@ -484,6 +484,44 @@ async def daily_report_endpoint(
     return result
 
 
+@app.post("/archive-weekly")
+async def archive_weekly_endpoint(
+    x_hermes_secret: str | None = Header(default=None, alias="X-Hermes-Secret"),
+):
+    """Move all Processed=true sales from FF Sales Log into FF Sales Archive,
+    then soft-delete the source rows. Pending (Processed=false) sales stay
+    put. Owned by Hermes — fire weekly on Sunday morning Asia/Manila so the
+    log is clean before staff start logging the new week's sales.
+
+    Suggested cron: 0 2 * * 0 UTC = 10:00 Sunday Asia/Manila.
+    """
+    if HERMES_SECRET and x_hermes_secret != HERMES_SECRET:
+        logger.warning("archive-weekly: missing/invalid X-Hermes-Secret")
+        return Response(status_code=403)
+    try:
+        result = await notion.archive_processed_sales()
+    except Exception as e:
+        logger.error(f"Weekly archive failed: {e}", exc_info=True)
+        await _send_telegram(f"❌ Weekly archive failed: {e}")
+        return Response(status_code=500, content=str(e))
+
+    msg_lines = [
+        "📦 Weekly archive complete",
+        f"• Candidates (Processed=true): {result['candidates']}",
+        f"• Archived to FF Sales Archive: {result['archived']}",
+    ]
+    if result["failed"]:
+        msg_lines.append(f"• ⚠️ Failed: {result['failed']}")
+        for f in result["failures"][:5]:
+            msg_lines.append(f"   - {f}")
+    msg_lines.append("")
+    msg_lines.append("Pending sales (if any) stayed in FF Sales Log for next report.")
+    await _send_telegram("\n".join(msg_lines))
+
+    logger.info(f"Weekly archive done: {result}")
+    return result
+
+
 # --- Diagnostics ---
 
 @app.post("/test-telegram")

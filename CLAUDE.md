@@ -93,6 +93,19 @@ Telegram Message
   Price per Unit, Installation Fee, Salesperson, Payment Method, Payment
   Status, Invoice #, Unit, Processed (checkbox).
 
+### FF Sales Archive (`FF_SALES_ARCHIVE_DB_ID`)
+- Created by duplicating the FF Sales Log schema. Receives a copy of every
+  Processed=true row each Sunday morning when Hermes hits
+  `POST /archive-weekly`. The source row is then soft-deleted (sent to
+  Notion's trash, recoverable for 30 days) so the working FF Sales Log
+  stays clean for the new week.
+- Pending (Processed=false) sales are NOT archived — they stay in FF Sales
+  Log and roll into the next daily report.
+- All Notion property types are copied through `_property_for_create`
+  (notion_client.py): title, rich_text, number, select, multi_select, date,
+  checkbox, phone_number, email, url, people. Read-only types (formula,
+  rollup, files, relation, status) are dropped on copy.
+
 ## Agent Tools (defined in agent.py)
 1. **lookup_products** — Search inventory by keyword or get all products
 2. **update_stock** — Set new stock quantity by page ID
@@ -164,6 +177,25 @@ Invoice keys are uppercased; commands are case-insensitive (`approve inv-0201` w
 - 24-hour TTL — entries older than that get dropped on next access.
 - **Lost on Railway redeploy.** This is intentional — sales stay `Processed=false` in Notion, so they reappear in the next daily report and the owner sees them again. No data loss, just a re-prompt.
 
+## Weekly Archive Flow
+
+Hermes fires `POST /archive-weekly` (with `X-Hermes-Secret`) every Sunday at
+10:00 Asia/Manila (cron `0 2 * * 0` UTC). The endpoint:
+
+1. Queries FF Sales Log for all rows where `Processed == true`.
+2. For each row, copies every property to a new row in FF Sales Archive
+   (uses `_property_for_create` to convert Notion's read format to the
+   shape POST /pages expects).
+3. Soft-deletes the source row (`{"archived": true}` — recoverable from
+   Notion's trash for 30 days if anything went wrong).
+4. Posts a summary to Telegram: candidates / archived / failed counts.
+
+Pending sales (still awaiting `approve`/`skip` from the owner) are left in
+place so they roll into the next Mon-Sat daily report.
+
+If Hermes is down or the endpoint fails, no data is lost — Processed sales
+just stay in FF Sales Log until the next successful run.
+
 ## Telegram Setup
 
 ### Bot creation
@@ -205,6 +237,7 @@ mismatch clarification alerts are sent to `TELEGRAM_CHAT_ID` (same chat).
 | POST | `/telegram-setup-webhook` | — | One-shot: register the webhook URL with Telegram |
 | GET | `/telegram-webhook-info` | — | Diagnostic: show Telegram's view of the registered webhook |
 | POST | `/run-daily-report` | required `X-Hermes-Secret` (when `HERMES_SECRET` is set) | Trigger the daily sales report; Hermes fires this on its cron |
+| POST | `/archive-weekly` | required `X-Hermes-Secret` (when `HERMES_SECRET` is set) | Move Processed sales from FF Sales Log → FF Sales Archive; Hermes fires this Sunday morning |
 | POST | `/test-telegram` | — | Diagnostic: send a test message and return the raw Telegram API response |
 
 ## Environment Variables
@@ -213,6 +246,7 @@ NOTION_API_KEY            — Notion integration token (starts with ntn_...)
 NOTION_DATABASE_ID        — Inventory database ID
 NOTION_SALES_DB_ID        — Daily Sales Ledger database ID
 FF_SALES_LOG_DB_ID        — Raw FF Sales Log database ID (has sensible default)
+FF_SALES_ARCHIVE_DB_ID    — Destination DB for the Sunday weekly archive (same schema as FF Sales Log)
 ANTHROPIC_API_KEY         — Anthropic API key (starts with sk-ant-...)
 TELEGRAM_BOT_TOKEN        — Telegram bot token from @BotFather
 TELEGRAM_CHAT_ID          — Chat ID for the 6PM daily report
