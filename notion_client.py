@@ -5,7 +5,7 @@ NOTION_API_KEY = os.getenv("NOTION_API_KEY")
 NOTION_DATABASE_ID = os.getenv("NOTION_DATABASE_ID")
 NOTION_SALES_DB_ID = os.getenv("NOTION_SALES_DB_ID")
 FF_SALES_LOG_DB_ID = os.getenv("FF_SALES_LOG_DB_ID", "a3406a84-4be0-41d0-9593-8090cae4133c")
-FF_SALES_ARCHIVE_DB_ID = os.getenv("FF_SALES_ARCHIVE_DB_ID")  # destination for weekly archive
+FF_SALES_ARCHIVE_DB_ID = (os.getenv("FF_SALES_ARCHIVE_DB_ID") or "").strip() or None  # destination for weekly archive
 NOTION_BASE_URL = "https://api.notion.com/v1"
 NOTION_HEADERS = {
     "Authorization": f"Bearer {NOTION_API_KEY}",
